@@ -234,7 +234,8 @@ class AWGManager:
             config = self._get_server_config(protocol_type)
             for line in config.split('\n'):
                 if line.startswith('Address'):
-                    addr = line.split('=')[1].strip()
+                    # Take the first (IPv4) part of a possibly dual-stack Address line
+                    addr = line.split('=')[1].strip().split(',')[0].strip()
                     ip = addr.split('/')[0]
                     return ip
         except Exception:
@@ -247,7 +248,8 @@ class AWGManager:
             config = self._get_server_config(protocol_type)
             for line in config.split('\n'):
                 if line.startswith('Address'):
-                    addr = line.split('=')[1].strip()
+                    # Take the first (IPv4) part of a possibly dual-stack Address line
+                    addr = line.split('=')[1].strip().split(',')[0].strip()
                     if '/' in addr:
                         return addr.split('/')[1]
         except Exception:
