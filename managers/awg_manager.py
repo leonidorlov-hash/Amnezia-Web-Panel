@@ -308,6 +308,32 @@ class AWGManager:
         out, _, _ = self.ssh.run_sudo_command("ip -6 addr show scope global 2>/dev/null")
         return bool(out.strip())
 
+    def _get_server_ipv6_endpoint(self):
+        """Get the host's first global (non-ULA) IPv6 address for use as a client Endpoint."""
+        out, _, _ = self.ssh.run_sudo_command(
+            "ip -6 addr show scope global -o 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vi '^f[cd]' | head -1"
+        )
+        return out.strip()
+
+    def _with_ipv6_endpoint_variant(self, config, server_host, port):
+        """Append a copy of the client config that uses the server's IPv6 endpoint.
+
+        WireGuard allows only one Endpoint per config, so the IPv6 variant is
+        appended as a separate section for clients on IPv6-only networks.
+        """
+        ipv6_endpoint = self._get_server_ipv6_endpoint()
+        if not ipv6_endpoint:
+            return config
+        v4_endpoint = f"Endpoint = {server_host}:{port}"
+        v6_config = config.replace(v4_endpoint, f"Endpoint = [{ipv6_endpoint}]:{port}")
+        if v6_config == config:
+            return config
+        return (
+            config
+            + "\n# ===== IPv6 endpoint variant (use on IPv6-only networks) =====\n"
+            + v6_config
+        )
+
     # ===================== INSTALLATION =====================
 
     def check_docker_installed(self):
@@ -1259,7 +1285,7 @@ PersistentKeepalive = 25
             'client_name': client_name,
             'client_id': client_pub_key,
             'client_ip': client_ip,
-            'config': client_config,
+            'config': self._with_ipv6_endpoint_variant(client_config, server_host, port),
         }
 
     def get_client_config(self, protocol_type, client_id, server_host, port):
@@ -1346,7 +1372,7 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = {server_host}:{port}
 PersistentKeepalive = 25
 """
-        return config
+        return self._with_ipv6_endpoint_variant(config, server_host, port)
 
     def toggle_client(self, protocol_type, client_id, enable):
         """Enable or disable a client by adding/removing their [Peer] from server config."""
