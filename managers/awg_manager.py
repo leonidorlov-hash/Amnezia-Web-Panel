@@ -28,6 +28,9 @@ AWG_DEFAULTS = {
     'subnet_address': '10.8.1.0',
     'subnet_cidr': '24',
     'subnet_ip': '10.8.1.1',
+    # IPv6 ULA subnet used for dual-stack tunnels (NAT66, no provider prefix needed)
+    'subnet_ipv6_ip': 'fd42:8:1::1',
+    'subnet_ipv6_cidr': '64',
     'dns1': '1.1.1.1',
     'dns2': '1.0.0.1',
     # AWG obfuscation parameters
@@ -262,6 +265,47 @@ class AWGManager:
         net_parts = [(net_int >> 24) & 0xFF, (net_int >> 16) & 0xFF, (net_int >> 8) & 0xFF, net_int & 0xFF]
         return '.'.join(map(str, net_parts))
 
+    def _get_subnet_ipv6_ip(self, protocol_type):
+        """Get the IPv6 gateway from server config, or '' if the tunnel is IPv4-only."""
+        try:
+            config = self._get_server_config(protocol_type)
+            for line in config.split('\n'):
+                line = line.strip()
+                if line.startswith('Address'):
+                    addr = line.split('=', 1)[1]
+                    for part in addr.split(','):
+                        part = part.strip()
+                        if ':' in part:
+                            return part.split('/')[0]
+        except Exception:
+            pass
+        return ''
+
+    def _get_client_ipv6(self, protocol_type, client_ip):
+        """Derive a client's IPv6 address from its IPv4 address.
+
+        The last hextet mirrors the IPv4 last octet (in hex), so every client
+        with 10.8.1.N deterministically gets <prefix>::<hex(N)>. Returns ''
+        when the server tunnel has no IPv6 gateway configured.
+        """
+        gateway = self._get_subnet_ipv6_ip(protocol_type)
+        if not gateway:
+            return ''
+        try:
+            octet = int(client_ip.split('.')[3])
+        except (ValueError, IndexError, AttributeError):
+            return ''
+        prefix = gateway.rsplit(':', 1)[0] + ':'
+        return f"{prefix}{octet:x}"
+
+    def _detect_server_ipv6(self):
+        """Check if the host has working IPv6 (default route or any global address)."""
+        out, _, _ = self.ssh.run_sudo_command("ip -6 route show default 2>/dev/null")
+        if out.strip():
+            return True
+        out, _, _ = self.ssh.run_sudo_command("ip -6 addr show scope global 2>/dev/null")
+        return bool(out.strip())
+
     # ===================== INSTALLATION =====================
 
     def check_docker_installed(self):
@@ -335,6 +379,7 @@ fi
         """Setup host firewall (mirrors setup_host_firewall.sh)."""
         script = """
 sysctl -w net.ipv4.ip_forward=1
+sysctl -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
 iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || iptables -A INPUT -p icmp --icmp-type echo-request -j DROP
 iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-USER 2>/dev/null
 """
@@ -439,7 +484,13 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
 
         # Step 6: Configure container (generate server keys and config)
         results.append("Configuring AWG...")
-        self._configure_container(protocol_type, port, awg_params)
+        ipv6_enabled = self._detect_server_ipv6()
+        results.append(
+            "IPv6 detected on host, enabling dual-stack tunnel"
+            if ipv6_enabled else
+            "No IPv6 on host, tunnel will be IPv4-only"
+        )
+        self._configure_container(protocol_type, port, awg_params, ipv6=ipv6_enabled)
         results.append("AWG configured")
 
         # Step 7: Upload and run start script
@@ -485,7 +536,7 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
             f"(status: {last_status}). Logs:\n{logs_out}"
         )
 
-    def _configure_container(self, protocol_type, port, awg_params):
+    def _configure_container(self, protocol_type, port, awg_params, ipv6=False):
         """Configure the AWG container (generate keys and server config)."""
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
@@ -493,6 +544,10 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
 
         subnet_ip = self._get_subnet_ip(protocol_type)
         subnet_cidr = self._get_subnet_cidr(protocol_type)
+
+        address_line = f"{subnet_ip}/{subnet_cidr}"
+        if ipv6:
+            address_line += f", {AWG_DEFAULTS['subnet_ipv6_ip']}/{AWG_DEFAULTS['subnet_ipv6_cidr']}"
 
         # Build the server config generation script
         if self._base_protocol(protocol_type) in (self.AWG, self.AWG2):
@@ -511,7 +566,7 @@ echo $WIREGUARD_PSK > /opt/amnezia/awg/wireguard_psk.key
 cat > {config_path} <<EOF
 [Interface]
 PrivateKey = $WIREGUARD_SERVER_PRIVATE_KEY
-Address = {subnet_ip}/{subnet_cidr}
+Address = {address_line}
 ListenPort = {port}
 Jc = {awg_params['junk_packet_count']}
 Jmin = {awg_params['junk_packet_min_size']}
@@ -550,7 +605,7 @@ echo $WIREGUARD_PSK > /opt/amnezia/awg/wireguard_psk.key
 cat > {config_path} <<EOF
 [Interface]
 PrivateKey = $WIREGUARD_SERVER_PRIVATE_KEY
-Address = {subnet_ip}/{subnet_cidr}
+Address = {address_line}
 ListenPort = {port}
 Jc = {awg_params['junk_packet_count']}
 Jmin = {awg_params['junk_packet_min_size']}
@@ -579,11 +634,14 @@ EOF
         start_script = f"""#!/bin/bash
 echo "Container startup"
 
-# Read subnet from server config dynamically
-SUBNET=$(grep '^Address' {config_path} | head -1 | cut -d'=' -f2 | tr -d ' ')
+# Read subnet from server config dynamically (IPv4 part of the Address line)
+SUBNET=$(grep '^Address' {config_path} | head -1 | cut -d'=' -f2 | cut -d',' -f1 | tr -d ' ')
 if [ -z "$SUBNET" ]; then
   SUBNET={AWG_DEFAULTS['subnet_ip']}/{AWG_DEFAULTS['subnet_cidr']}
 fi
+
+# IPv6 subnet, if the tunnel is dual-stack (second part of the Address line)
+SUBNET6=$(grep '^Address' {config_path} | head -1 | tr ',' '\n' | grep ':' | sed 's/^[^=]*=//' | tr -d ' ' | head -1)
 
 # kill daemons in case of restart
 {quick_bin} down {config_path} 2>/dev/null
@@ -605,6 +663,19 @@ iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
 
 iptables -t nat -A POSTROUTING -s $SUBNET -o eth0 -j MASQUERADE
 iptables -t nat -A POSTROUTING -s $SUBNET -o eth1 -j MASQUERADE
+
+# IPv6 forwarding + NAT66, only when the tunnel has an IPv6 subnet
+if [ -n "$SUBNET6" ] && command -v ip6tables >/dev/null 2>&1; then
+  sysctl -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+  ip6tables -A INPUT -i $IFACE -j ACCEPT
+  ip6tables -A FORWARD -i $IFACE -j ACCEPT
+  ip6tables -A OUTPUT -o $IFACE -j ACCEPT
+  ip6tables -A FORWARD -i $IFACE -o eth0 -s $SUBNET6 -j ACCEPT
+  ip6tables -A FORWARD -i $IFACE -o eth1 -s $SUBNET6 -j ACCEPT
+  ip6tables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+  ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth0 -j MASQUERADE
+  ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth1 -j MASQUERADE
+fi
 
 tail -f /dev/null
 """
@@ -716,11 +787,14 @@ tail -f /dev/null
         start_script = f"""#!/bin/bash
 echo "Container startup"
 
-# Read subnet from server config dynamically
-SUBNET=$(grep '^Address' {config_path} | head -1 | cut -d'=' -f2 | tr -d ' ')
+# Read subnet from server config dynamically (IPv4 part of the Address line)
+SUBNET=$(grep '^Address' {config_path} | head -1 | cut -d'=' -f2 | cut -d',' -f1 | tr -d ' ')
 if [ -z "$SUBNET" ]; then
   SUBNET={AWG_DEFAULTS['subnet_ip']}/{AWG_DEFAULTS['subnet_cidr']}
 fi
+
+# IPv6 subnet, if the tunnel is dual-stack (second part of the Address line)
+SUBNET6=$(grep '^Address' {config_path} | head -1 | tr ',' '\n' | grep ':' | sed 's/^[^=]*=//' | tr -d ' ' | head -1)
 
 # kill daemons in case of restart
 {quick_bin} down {config_path} 2>/dev/null
@@ -742,6 +816,19 @@ iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
 
 iptables -t nat -A POSTROUTING -s $SUBNET -o eth0 -j MASQUERADE
 iptables -t nat -A POSTROUTING -s $SUBNET -o eth1 -j MASQUERADE
+
+# IPv6 forwarding + NAT66, only when the tunnel has an IPv6 subnet
+if [ -n "$SUBNET6" ] && command -v ip6tables >/dev/null 2>&1; then
+  sysctl -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+  ip6tables -A INPUT -i $IFACE -j ACCEPT
+  ip6tables -A FORWARD -i $IFACE -j ACCEPT
+  ip6tables -A OUTPUT -o $IFACE -j ACCEPT
+  ip6tables -A FORWARD -i $IFACE -o eth0 -s $SUBNET6 -j ACCEPT
+  ip6tables -A FORWARD -i $IFACE -o eth1 -s $SUBNET6 -j ACCEPT
+  ip6tables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+  ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth0 -j MASQUERADE
+  ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth1 -j MASQUERADE
+fi
 
 tail -f /dev/null
 """
@@ -1067,6 +1154,9 @@ tail -f /dev/null
 
         # Get next available IP
         client_ip = self._get_next_ip(protocol_type)
+        # Dual-stack: derive the client's IPv6 when the tunnel has an IPv6 gateway
+        client_ipv6 = self._get_client_ipv6(protocol_type, client_ip)
+        allowed_ips = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
 
         # Get AWG params from server config
         awg_params = self._get_awg_params_from_config(protocol_type)
@@ -1076,7 +1166,7 @@ tail -f /dev/null
 [Peer]
 PublicKey = {client_pub_key}
 PresharedKey = {psk}
-AllowedIPs = {client_ip}/32
+AllowedIPs = {allowed_ips}
 
 """
         # Insert peer into server config, keeping peers sorted by IP (with backup)
@@ -1100,6 +1190,8 @@ AllowedIPs = {client_ip}/32
                 'enabled': True,
             }
         }
+        if client_ipv6:
+            new_client['userData']['clientIpv6'] = client_ipv6
         clients_table.append(new_client)
         self._save_clients_table(protocol_type, clients_table)
 
@@ -1112,10 +1204,12 @@ AllowedIPs = {client_ip}/32
 
         mtu = AWG_DEFAULTS['mtu']
 
-        # Standard fields
+        # Standard fields (dual-stack when the client has an IPv6 address)
+        address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
+        dns_line = dns + (", 2606:4700:4700::1111" if client_ipv6 else "")
         config_lines = [
-            f"Address = {client_ip}/32",
-            f"DNS = {dns}",
+            f"Address = {address_line}",
+            f"DNS = {dns_line}",
             f"PrivateKey = {client_priv_key}",
             f"MTU = {mtu}"
         ]
@@ -1184,6 +1278,8 @@ PersistentKeepalive = 25
         client_priv_key = ud.get('clientPrivateKey', '')
         client_ip = ud.get('clientIp', '')
         psk = ud.get('psk', '')
+        # Dual-stack: use the stored IPv6 or derive it from the IPv4 address
+        client_ipv6 = ud.get('clientIpv6', '') or self._get_client_ipv6(protocol_type, client_ip)
 
         if not client_priv_key:
             raise RuntimeError("Client private key not stored. Config cannot be reconstructed.")
@@ -1200,10 +1296,12 @@ PersistentKeepalive = 25
 
         mtu = AWG_DEFAULTS['mtu']
 
-        # Standard fields
+        # Standard fields (dual-stack when the client has an IPv6 address)
+        address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
+        dns_line = dns + (", 2606:4700:4700::1111" if client_ipv6 else "")
         config_lines = [
-            f"Address = {client_ip}/32",
-            f"DNS = {dns}",
+            f"Address = {address_line}",
+            f"DNS = {dns_line}",
             f"PrivateKey = {client_priv_key}",
             f"MTU = {mtu}"
         ]
@@ -1281,7 +1379,11 @@ PersistentKeepalive = 25
                 )
 
             ud['clientIp'] = client_ip
-            ud['allowedIps'] = f'{client_ip}/32'
+            client_ipv6 = ud.get('clientIpv6', '') or self._get_client_ipv6(protocol_type, client_ip)
+            allowed_ips = f'{client_ip}/32' + (f', {client_ipv6}/128' if client_ipv6 else '')
+            ud['allowedIps'] = allowed_ips
+            if client_ipv6:
+                ud['clientIpv6'] = client_ipv6
             table_changed = True
 
             if not psk:
@@ -1293,7 +1395,7 @@ PersistentKeepalive = 25
 [Peer]
 PublicKey = {client_id}
 PresharedKey = {psk}
-AllowedIPs = {client_ip}/32
+AllowedIPs = {allowed_ips}
 
 """
             escaped_peer = peer_section.replace("'", "'\\''")
