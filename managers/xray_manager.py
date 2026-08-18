@@ -400,9 +400,12 @@ ENTRYPOINT [ "dumb-init", "/opt/amnezia/start.sh" ]
         tag = self._get_vless_inbound_tag(config)
         if not tag:
             return False
+        _ib = self._get_vless_inbound(config) or {}
         payload = {
             "inbounds": [{
                 "tag": tag,
+                "port": _ib.get('port', 443),
+                "listen": "0.0.0.0",
                 "protocol": "vless",
                 "settings": {
                     "clients": [client],
@@ -411,7 +414,7 @@ ENTRYPOINT [ "dumb-init", "/opt/amnezia/start.sh" ]
             }]
         }
         ok, message = self._run_xray_api_json('adu', payload)
-        if not ok:
+        if not ok or 'Added 0 user' in (message or ''):
             logger.warning(f"Xray API add user failed: {message}")
             return False
         return True
