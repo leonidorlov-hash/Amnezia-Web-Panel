@@ -828,28 +828,78 @@ tail -f /dev/null
         return ips
 
     def _get_next_ip(self, protocol_type):
-        """Calculate the next available IP for a new client."""
+        """Return the first free IP in the subnet, filling gaps left by deleted clients.
+
+        The old implementation took the last IP in file order and incremented it,
+        which produced duplicate IPs when peers were not sorted by IP and never
+        reused addresses freed by deleted clients.
+        """
         used_ips = self._get_used_ips(protocol_type)
-        if not used_ips:
-            base = self._get_subnet_base(protocol_type)
-            parts = base.split('.')
-            parts[3] = '2'
-            return '.'.join(parts)
+        base = self._get_subnet_base(protocol_type)
+        parts = base.split('.')
+        prefix = '.'.join(parts[:3])
 
-        # Get the last used IP and increment
-        last_ip = used_ips[-1]
-        parts = last_ip.split('.')
-        last_octet = int(parts[3])
+        used_octets = set()
+        for ip in used_ips:
+            ip_parts = ip.split('.')
+            if len(ip_parts) != 4 or '.'.join(ip_parts[:3]) != prefix:
+                continue
+            try:
+                used_octets.add(int(ip_parts[3]))
+            except ValueError:
+                continue
 
-        if last_octet == 254:
-            next_octet = last_octet + 3
-        elif last_octet == 255:
-            next_octet = last_octet + 2
-        else:
-            next_octet = last_octet + 1
+        for octet in range(2, 255):
+            if octet not in used_octets:
+                parts[3] = str(octet)
+                return '.'.join(parts)
 
-        parts[3] = str(next_octet)
-        return '.'.join(parts)
+        raise RuntimeError("No free IP addresses left in the subnet")
+
+    @staticmethod
+    def _peer_block_ip(block):
+        """Sort key for a [Peer] config block: its first AllowedIPs IPv4 address."""
+        match = re.search(r'AllowedIPs\s*=\s*(\d+)\.(\d+)\.(\d+)\.(\d+)', block)
+        if match:
+            return tuple(int(match.group(i)) for i in range(1, 5))
+        return (255, 255, 255, 255)
+
+    def _insert_peer_sorted(self, protocol_type, peer_section):
+        """Insert a new [Peer] section into the server config keeping peers sorted by IP.
+
+        Creates a timestamped backup of the config inside the container before
+        overwriting it, then rewrites the file with all [Peer] sections ordered
+        by their AllowedIPs address.
+        """
+        container_name = self._container_name(protocol_type)
+        config_path = self._resolve_config_path(protocol_type)
+
+        config = self._get_server_config(protocol_type)
+
+        # Backup current config inside the container before modifying it
+        ts = __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} cp {config_path} {config_path}.bak.{ts}"
+        )
+
+        head, _, rest = config.partition('[Peer]')
+        blocks = []
+        if rest:
+            for chunk in rest.split('[Peer]'):
+                chunk = chunk.strip()
+                if chunk:
+                    blocks.append('[Peer]\n' + chunk)
+
+        blocks.append(peer_section.strip())
+        blocks.sort(key=self._peer_block_ip)
+
+        new_config = head.rstrip('\n') + '\n\n' + '\n\n'.join(blocks) + '\n'
+
+        self.ssh.upload_file(new_config, "/tmp/_amnz_add_peer.conf")
+        self.ssh.run_sudo_command(
+            f"docker cp /tmp/_amnz_add_peer.conf {container_name}:{config_path}"
+        )
+        self.ssh.run_command("rm -f /tmp/_amnz_add_peer.conf")
 
     def _extract_ipv4(self, value):
         """Extract the first IPv4 address from AllowedIPs/clientIp-like values."""
@@ -1029,11 +1079,8 @@ PresharedKey = {psk}
 AllowedIPs = {client_ip}/32
 
 """
-        # Append peer to server config
-        escaped_peer = peer_section.replace("'", "'\\''")
-        self.ssh.run_sudo_command(
-            f"docker exec -i {container_name} bash -c 'echo \"{escaped_peer}\" >> {config_path}'"
-        )
+        # Insert peer into server config, keeping peers sorted by IP (with backup)
+        self._insert_peer_sorted(protocol_type, peer_section)
 
         # Sync config without restart
         self.ssh.run_sudo_command(
