@@ -311,7 +311,7 @@ class AWGManager:
     def _get_server_ipv6_endpoint(self):
         """Get the host's first global (non-ULA) IPv6 address for use as a client Endpoint."""
         out, _, _ = self.ssh.run_sudo_command(
-            "ip -6 addr show scope global -o 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vi '^f[cd]' | head -1"
+            "ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vi '^f[cd]' | head -1"
         )
         return out.strip()
 
