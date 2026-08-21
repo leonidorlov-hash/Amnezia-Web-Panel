@@ -2070,6 +2070,25 @@
                 if (assignedUser) metaHtml += `<span class="badge badge-info" style="font-size:0.65rem;">👤 ${escapeHtml(assignedUser)}</span>`;
                 if (created) metaHtml += `<span>📅 ${formatDate(created)}</span>`;
 
+                // Peer internal IP shown next to the name
+                const peerIp = userData.clientIp || ((userData.allowedIps || '').match(/(\d+\.\d+\.\d+\.\d+)/) || [])[1] || '';
+                const ipHtml = peerIp ? ` <span class="client-ip">${escapeHtml(peerIp)}</span>` : '';
+
+                // Connection flood warnings (P2P/torrent detection), newest last
+                let warningsHtml = '';
+                if (Array.isArray(userData.connWarnings) && userData.connWarnings.length) {
+                    warningsHtml = '<div class="conn-warnings">' + userData.connWarnings.map(ev => {
+                        const d = new Date(ev.ts * 1000);
+                        const dateStr = String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+                        const timeStr = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+                        const text = _('conn_warning_text')
+                            .replace('{date}', dateStr)
+                            .replace('{time}', timeStr)
+                            .replace('{count}', ev.count);
+                        return `<div class="conn-warning">${escapeHtml(text)}</div>`;
+                    }).join('') + '</div>';
+                }
+
                 if (proto === 'telemt') {
                     if (userData.total_octets) metaHtml += `<span class="traffic-badge">📊 ${formatBytes(userData.total_octets)}</span>`;
                     if (userData.current_connections !== undefined) metaHtml += `<span>🔌 ${userData.current_connections} conns</span>`;
@@ -2098,8 +2117,9 @@
                         <div class="client-info">
                             <div class="client-avatar${client._online ? ' avatar-online' : ''}">${initial}</div>
                             <div>
-                                <div class="client-name">${escapeHtml(name)}</div>
+                                <div class="client-name">${escapeHtml(name)}${ipHtml}</div>
                                 <div class="client-meta">${metaHtml || `<span class="text-muted">${_('no_data')}</span>`}</div>
+                                ${warningsHtml}
                             </div>
                         </div>
                         <div class="client-actions">

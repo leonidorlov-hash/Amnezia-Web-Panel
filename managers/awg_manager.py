@@ -13,8 +13,10 @@ import os
 import secrets
 import struct
 import hashlib
+import ipaddress
 import logging
 import re
+import time
 from base64 import b64encode, b64decode
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives import serialization
@@ -30,8 +32,7 @@ AWG_DEFAULTS = {
     'subnet_ip': '10.8.1.1',
     # IPv6 ULA subnet used for dual-stack tunnels (NAT66, no provider prefix needed)
     'subnet_ipv6_ip': 'fd42:8:1::1',
-    'subnet_ipv6_cidr': '64',
-    'dns1': '1.1.1.1',
+    'subnet_ipv6_cidr': '64',    'dns1': '1.1.1.1',
     'dns2': '1.0.0.1',
     # AWG obfuscation parameters
     'junk_packet_count': '3',
@@ -71,6 +72,11 @@ AWG3_CONFIG_KEYS = tuple(config_key for _, config_key in AWG3_PARAM_MAP)
 # checks in netlink.c. Below that `awg setconf` fails with a bare
 # "Invalid argument": the explanation only goes to net_dbg_ratelimited.
 AWG3_MIN_JUNK_SIZE = 12
+
+# Connection flood monitoring (P2P/torrent detection)
+CONN_WARN_THRESHOLD = 600    # simultaneous connections per peer that trigger a warning
+CONN_WARN_COOLDOWN = 3600    # min seconds between two recorded warnings for the same peer
+CONN_WARN_MAX_EVENTS = 5     # how many recent warnings are kept per peer
 
 
 def generate_wg_keypair():
@@ -1155,6 +1161,28 @@ tail -f /dev/null
         except Exception as e:
             logger.warning(f'get_clients: failed to parse conf peers: {e}')
 
+        # Connection flood monitoring: count conntrack entries per peer IP
+        # and attach recent warnings (P2P/torrent detection).
+        try:
+            conn_counts = self._count_connections_by_ip(protocol_type)
+            conn_warnings = (self._update_conn_warnings(protocol_type, conn_counts)
+                             if conn_counts else self._load_conn_warnings(protocol_type))
+            for client in clients_table:
+                user_data = client.get('userData', {})
+                ip = user_data.get('clientIp', '')
+                if not ip:
+                    m = re.search(r'(\d+\.\d+\.\d+\.\d+)', user_data.get('allowedIps', '') or '')
+                    ip = m.group(1) if m else ''
+                if not ip:
+                    continue
+                user_data['clientIp'] = ip
+                user_data['connCount'] = conn_counts.get(ip, 0)
+                if ip in conn_warnings:
+                    user_data['connWarnings'] = conn_warnings[ip]
+                client['userData'] = user_data
+        except Exception as e:
+            logger.warning(f'get_clients: conn monitoring failed: {e}')
+
         return clients_table
 
     def _parse_bytes(self, size_str):
@@ -1167,6 +1195,94 @@ tail -f /dev/null
             return int(val * units.get(unit, 1))
         except Exception:
             return 0
+
+    # ---- Connection flood monitoring (P2P/torrent detection) ----
+
+    def _conn_warnings_path(self):
+        """Path inside container, next to clientsTable (persisted via volume)."""
+        return '/opt/amnezia/awg/conn_warnings.json'
+
+    def _count_connections_by_ip(self, protocol_type):
+        """Count conntrack entries per peer IP on the host.
+
+        Reads /proc/net/nf_conntrack on the host (no extra packages needed)
+        and counts entries whose ORIGINAL source IP belongs to the instance
+        subnet. Returns {ip: count}; empty dict if conntrack is unavailable.
+        """
+        try:
+            subnet_ip = self._get_subnet_ip(protocol_type)
+            cidr = int(self._get_subnet_cidr(protocol_type))
+            network = ipaddress.ip_network(f'{subnet_ip}/{cidr}', strict=False)
+        except Exception:
+            return {}
+
+        out, err, code = self.ssh.run_sudo_command(
+            "head -c 8000000 /proc/net/nf_conntrack 2>/dev/null"
+        )
+        if code != 0 or not out.strip():
+            return {}
+
+        counts = {}
+        for line in out.split('\n'):
+            # First src= on the line is the original (initiator) tuple
+            m = re.search(r'\bsrc=(\d+\.\d+\.\d+\.\d+)', line)
+            if not m:
+                continue
+            ip = m.group(1)
+            try:
+                if ipaddress.ip_address(ip) in network:
+                    counts[ip] = counts.get(ip, 0) + 1
+            except ValueError:
+                continue
+        return counts
+
+    def _load_conn_warnings(self, protocol_type):
+        """Load recorded warnings {ip: [{ts, count}, ...]} from the container."""
+        container_name = self._container_name(protocol_type)
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} cat {self._conn_warnings_path()} 2>/dev/null"
+        )
+        if code != 0 or not out.strip():
+            return {}
+        try:
+            data = json.loads(out)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def _save_conn_warnings(self, protocol_type, warnings):
+        """Persist warnings into the container (same pattern as clientsTable)."""
+        container_name = self._container_name(protocol_type)
+        self.ssh.upload_file(json.dumps(warnings), "/tmp/_amnz_connwarn.json")
+        self.ssh.run_sudo_command(
+            f"docker cp /tmp/_amnz_connwarn.json {container_name}:{self._conn_warnings_path()}"
+        )
+        self.ssh.run_command("rm -f /tmp/_amnz_connwarn.json")
+
+    def _update_conn_warnings(self, protocol_type, counts):
+        """Record a warning for every peer above CONN_WARN_THRESHOLD.
+
+        At most one warning per peer per CONN_WARN_COOLDOWN seconds; only the
+        last CONN_WARN_MAX_EVENTS are kept. Returns {ip: [{ts, count}, ...]}.
+        """
+        warnings = self._load_conn_warnings(protocol_type)
+        now = int(time.time())
+        changed = False
+        for ip, count in counts.items():
+            if count < CONN_WARN_THRESHOLD:
+                continue
+            events = warnings.get(ip, [])
+            if events and now - int(events[-1].get('ts', 0)) < CONN_WARN_COOLDOWN:
+                continue
+            events.append({'ts': now, 'count': count})
+            warnings[ip] = events[-CONN_WARN_MAX_EVENTS:]
+            changed = True
+        if changed:
+            try:
+                self._save_conn_warnings(protocol_type, warnings)
+            except Exception as e:
+                logger.warning(f'failed to save conn warnings: {e}')
+        return warnings
 
     def _wg_show(self, protocol_type):
         """Run 'wg show all' and parse output."""

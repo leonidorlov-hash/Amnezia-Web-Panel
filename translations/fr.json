@@ -403,5 +403,6 @@
   "reset_traffic": "Réinitialiser le trafic",
   "resetting": "Réinitialisation...",
   "reset_traffic_confirm": "Réinitialiser le trafic actuel de cet utilisateur ? Les statistiques totales seront conservées.",
-  "traffic_reset_success": "Trafic réinitialisé"
+  "traffic_reset_success": "Trafic réinitialisé",
+  "conn_warning_text": "⚠️ Attention : {count} connexions ouvertes le {date} à {time} !"
 }

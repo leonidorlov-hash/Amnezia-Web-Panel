@@ -436,5 +436,6 @@
   "reset_traffic": "Сбросить трафик",
   "resetting": "Сброс...",
   "reset_traffic_confirm": "Сбросить текущий трафик пользователя? Общая статистика сохранится.",
-  "traffic_reset_success": "Трафик сброшен"
+  "traffic_reset_success": "Трафик сброшен",
+  "conn_warning_text": "⚠️ Внимание: {date} в {time} открыто {count} соединений!"
 }
