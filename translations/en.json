@@ -437,5 +437,6 @@
   "resetting": "Resetting...",
   "reset_traffic_confirm": "Reset this user's current traffic? Total statistics will be kept.",
   "traffic_reset_success": "Traffic reset",
-  "conn_warning_text": "⚠️ Warning: {count} connections opened at {time} on {date}!"
+  "conn_warning_text": "⚠️ Warning: {count} connections opened at {time} on {date}!",
+  "port_in_use_by": "Port {port} is already used by {owner}. Choose another port."
 }

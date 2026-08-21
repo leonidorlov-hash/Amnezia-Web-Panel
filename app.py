@@ -2590,6 +2590,60 @@ async def api_check_server(request: Request, server_id: int):
         return JSONResponse({'error': str(e), 'connection': 'failed'}, status_code=500)
 
 
+def get_used_ports(ssh):
+    """Return {'udp': {port: proc}, 'tcp': {port: proc}} for listening sockets.
+
+    Used to suggest a free port before protocol installation and to validate
+    the chosen port, instead of letting 'docker run' fail with a half-created
+    container on 'port is already allocated'.
+    """
+    out, _, code = ssh.run_sudo_command("ss -H -l -n -p -u; echo ---TCP---; ss -H -l -n -p -t")
+    used = {'udp': {}, 'tcp': {}}
+    if code != 0 or not out:
+        return used
+    section = 'udp'
+    for line in out.split('\n'):
+        line = line.strip()
+        if line == '---TCP---':
+            section = 'tcp'
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local = parts[3]
+        port = local.rsplit(':', 1)[-1]
+        if not port.isdigit():
+            continue
+        m = re.search(r'users:\(\("([^"]+)"', line)
+        used[section][port] = m.group(1) if m else '?'
+    return used
+
+
+# Protocols whose install port must be validated against used ports,
+# mapped to their transport. dns/adguard are skipped (internal bindings).
+INSTALL_PORT_TRANSPORT = {
+    'awg': 'udp', 'awg2': 'udp', 'awg3': 'udp', 'awg_legacy': 'udp',
+    'wireguard': 'udp',
+    'xray': 'tcp', 'telemt': 'tcp', 'socks5': 'tcp', 'nginx': 'tcp',
+}
+
+
+@app.get('/api/servers/{server_id}/used-ports', tags=["Servers"])
+async def api_used_ports(request: Request, server_id: int):
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        ssh = get_ssh(data['servers'][server_id])
+        ssh.connect()
+        return get_used_ports(ssh)
+    except Exception as e:
+        logger.exception("Error getting used ports")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
 @app.post('/api/servers/{server_id}/install', tags=["Protocols"])
 async def api_install_protocol(request: Request, server_id: int, req: InstallProtocolRequest):
     if not _check_admin(request):
@@ -2615,6 +2669,19 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
 
         ssh = get_ssh(server)
         ssh.connect()
+
+        # Validate the requested port before touching Docker: a busy port
+        # otherwise fails mid-install with a half-created broken container.
+        transport = INSTALL_PORT_TRANSPORT.get(install_base)
+        if transport and req.port and str(req.port).isdigit():
+            used = get_used_ports(ssh)
+            owner = used.get(transport, {}).get(str(req.port))
+            if owner:
+                return JSONResponse(
+                    {'error': f'Port {req.port}/{transport} is already used by {owner}. '
+                              f'Choose another port.'},
+                    status_code=400)
+
         docker_install_log = ensure_docker_installed(ssh)
         manager = get_protocol_manager(ssh, install_protocol)
 

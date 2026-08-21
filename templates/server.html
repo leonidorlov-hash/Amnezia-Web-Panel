@@ -1018,6 +1018,63 @@
         return String(port);
     }
 
+    // ---- Used-port awareness for the install modal ----
+    // Fetches real listening ports from the server (not just same-family
+    // protocol records) so the suggested port is actually free.
+    const UDP_INSTALL_PROTOS = new Set(['awg', 'awg2', 'awg3', 'awg_legacy', 'wireguard']);
+    const SKIP_PORT_CHECK = new Set(['dns', 'adguard']); // internal bindings
+    window.usedPorts = { ts: 0, udp: {}, tcp: {} };
+
+    async function refreshUsedPorts(force) {
+        if (!force && Date.now() - window.usedPorts.ts < 15000) return;
+        try {
+            const r = await fetch(`/api/servers/${SERVER_ID}/used-ports`);
+            if (r.ok) {
+                const d = await r.json();
+                window.usedPorts.udp = d.udp || {};
+                window.usedPorts.tcp = d.tcp || {};
+                window.usedPorts.ts = Date.now();
+            }
+        } catch (e) { /* keep stale data */ }
+    }
+
+    function installPortTransport(proto) {
+        return UDP_INSTALL_PROTOS.has(protoBase(proto)) ? 'udp' : 'tcp';
+    }
+
+    function portTakenBy(port, proto) {
+        const p = parseInt(port, 10);
+        if (Number.isNaN(p)) return null;
+        const table = window.usedPorts[installPortTransport(proto)] || {};
+        return table[String(p)] || null;
+    }
+
+    function firstFreePort(from, proto) {
+        let p = parseInt(from, 10) || 55424;
+        let guard = 0;
+        while (portTakenBy(p, proto) && guard++ < 1000) p += 1;
+        return String(p);
+    }
+
+    function validateInstallPort() {
+        const portInput = document.getElementById('installPort');
+        const portHint = document.getElementById('installPortHint');
+        const btn = document.getElementById('installBtn');
+        if (portInput.disabled || SKIP_PORT_CHECK.has(protoBase(currentInstallProto))) return;
+        const owner = portTakenBy(portInput.value, currentInstallProto);
+        if (owner) {
+            portInput.style.borderColor = '#ef4444';
+            portHint.style.color = '#ef4444';
+            portHint.textContent = _('port_in_use_by').replace('{port}', portInput.value).replace('{owner}', owner);
+            btn.disabled = true;
+        } else {
+            portInput.style.borderColor = '';
+            portHint.style.color = '';
+            if (portHint.dataset.orig) portHint.textContent = portHint.dataset.orig;
+            btn.disabled = false;
+        }
+    }
+
     function orderedProtocolEntries(protocols) {
         const entries = Object.entries(protocols || {});
         const order = new Map(MARKETPLACE_APPS.map((app, idx) => [app.proto, idx]));
@@ -1790,6 +1847,19 @@
         document.getElementById('installForm').classList.remove('hidden');
         document.getElementById('installProgress').classList.add('hidden');
         document.getElementById('installDone').style.display = 'none';
+
+        // Live port validation + auto-suggest a truly free port
+        portHint.dataset.orig = portHint.textContent;
+        portInput.oninput = validateInstallPort;
+        validateInstallPort();
+        refreshUsedPorts().then(() => {
+            if (!portInput.disabled && !SKIP_PORT_CHECK.has(protoBase(currentInstallProto))
+                    && portTakenBy(portInput.value, currentInstallProto)) {
+                portInput.value = firstFreePort(portInput.value, currentInstallProto);
+            }
+            validateInstallPort();
+        });
+
         openModal('installModal');
     }
 
