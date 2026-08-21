@@ -1159,11 +1159,13 @@ tail -f /dev/null
         return '/opt/amnezia/awg/conn_warnings.json'
 
     def _count_connections_by_ip(self, protocol_type):
-        """Count conntrack entries per peer IP on the host.
+        """Count conntrack entries per peer IP.
 
-        Reads /proc/net/nf_conntrack on the host (no extra packages needed)
-        and counts entries whose ORIGINAL source IP belongs to the instance
-        subnet. Returns {ip: count}; empty dict if conntrack is unavailable.
+        Reads /proc/net/nf_conntrack INSIDE the instance container (NAT for
+        the VPN subnet happens in the container's netns, so the host table
+        only shows the container's own IP) and counts entries whose ORIGINAL
+        source IP belongs to the instance subnet.
+        Returns {ip: count}; empty dict if conntrack is unavailable.
         """
         try:
             subnet_ip = self._get_subnet_ip(protocol_type)
@@ -1173,7 +1175,8 @@ tail -f /dev/null
             return {}
 
         out, err, code = self.ssh.run_sudo_command(
-            "head -c 8000000 /proc/net/nf_conntrack 2>/dev/null"
+            f"docker exec -i {self._container_name(protocol_type)} "
+            "sh -c 'head -c 8000000 /proc/net/nf_conntrack 2>/dev/null'"
         )
         if code != 0 or not out.strip():
             return {}
