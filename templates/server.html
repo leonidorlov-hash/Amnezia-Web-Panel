@@ -1997,7 +1997,7 @@
         document.getElementById('connectionsSection').scrollIntoView({ behavior: 'smooth' });
     }
 
-    async function loadConnections() {
+    async function loadConnections(isPoll) {
         const proto = document.getElementById('connProtoSelect').value;
         const loading = document.getElementById('connectionsLoading');
         const emptyEl = document.getElementById('connectionsEmpty');
@@ -2008,17 +2008,20 @@
             return;
         }
 
-        loading.style.display = '';
+        if (window.connLoading) return; // don't stack overlapping polls
+        window.connLoading = true;
+        if (!isPoll) loading.style.display = ''; // silent refresh on polls
         emptyEl.classList.add('hidden');
-        listEl.innerHTML = '';
         try {
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
             loading.style.display = 'none';
             if (!data.clients || data.clients.length === 0) {
+                listEl.innerHTML = '';
                 emptyEl.classList.remove('hidden');
                 return;
             }
             window.connectionsStore = {};
+            listEl.innerHTML = '';
             data.clients.forEach((client, idx) => {
                 const userData = client.userData || {};
                 window.connectionsStore[client.clientId] = userData;
@@ -2031,6 +2034,7 @@
                 const enabled = (client.enabled !== undefined) ? client.enabled : (userData.enabled !== false);
                 const hasPrivKey = !!userData.clientPrivateKey || proto === 'xray' || proto === 'telemt';
                 const assignedUser = client.assigned_user || '';
+                client._online = false; // reset each render; set by the handshake badge below
 
                 let metaHtml = '';
                 if (assignedUser) metaHtml += `<span class="badge badge-info" style="font-size:0.65rem;">👤 ${escapeHtml(assignedUser)}</span>`;
@@ -2043,9 +2047,14 @@
                     if (userData.quota) metaHtml += `<span class="badge" style="font-size:0.65rem;">Quota: ${formatBytes(userData.quota)}</span>`;
                     if (userData.expiry) metaHtml += `<span class="badge" style="font-size:0.65rem;">⌛ ${formatDate(userData.expiry)}</span>`;
                 } else {
-                    if (handshake) metaHtml += `<span>🤝 ${handshake}</span>`;
+                    const hsSec = parseHandshakeAgo(handshake);
+                    const isOnline = hsSec !== null && hsSec < 180;
+                    if (handshake) metaHtml += `<span class="meta-handshake${isOnline ? ' meta-online' : ''}">🤝 ${formatHandshakeCompact(handshake)}</span>`;
                     if (received) metaHtml += `<span class="traffic-badge traffic-down">↓ ${received}</span>`;
                     if (sent) metaHtml += `<span class="traffic-badge traffic-up">↑ ${sent}</span>`;
+                    const rates = computeRates(client.clientId, userData);
+                    if (rates) metaHtml += `<span class="traffic-badge speed-badge${rates.active ? ' speed-active' : ''}">↓${formatBytes(Math.round(rates.rx))}/s ↑${formatBytes(Math.round(rates.tx))}/s</span>`;
+                    if (isOnline) client._online = true;
                 }
 
                 if (!enabled) metaHtml += `<span class="badge badge-danger" style="font-size:0.65rem">${_('stop')}</span>`;
@@ -2060,7 +2069,7 @@
                 listEl.innerHTML += `
                     <div class="client-item" style="${disabledStyle}">
                         <div class="client-info">
-                            <div class="client-avatar">${initial}</div>
+                            <div class="client-avatar${client._online ? ' avatar-online' : ''}">${initial}</div>
                             <div>
                                 <div class="client-name">${escapeHtml(name)}</div>
                                 <div class="client-meta">${metaHtml || `<span class="text-muted">${_('no_data')}</span>`}</div>
@@ -2079,6 +2088,13 @@
         } catch (err) {
             loading.style.display = 'none';
             showToast(_('connections_load_error') + ': ' + err.message, 'error');
+        } finally {
+            window.connLoading = false;
+            // Auto-refresh every 5s while the connections section is visible (live speed/handshake)
+            clearTimeout(window.connPollTimer);
+            if (document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
+            }
         }
     }
 
@@ -2373,6 +2389,49 @@
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    // ========== Peer activity / speed (wg-easy style, client-side deltas) ==========
+    // Parse "2 hours, 29 minutes, 55 seconds ago" / "Now" into total seconds
+    function parseHandshakeAgo(str) {
+        if (!str) return null;
+        const s = String(str).toLowerCase().trim();
+        if (s.startsWith('now')) return 0;
+        let total = 0, matched = false, m;
+        const mult = { day: 86400, hour: 3600, minute: 60, second: 1 };
+        const re = /(\d+)\s*(day|hour|minute|second)s?/g;
+        while ((m = re.exec(s)) !== null) {
+            matched = true;
+            total += parseInt(m[1], 10) * mult[m[2]];
+        }
+        return matched ? total : null;
+    }
+
+    // Compact fixed-ish length: "45s ago" / "3m 51s ago" / "2h 29m ago" / "2d 3h ago"
+    function formatHandshakeCompact(str) {
+        const sec = parseHandshakeAgo(str);
+        if (sec === null) return str;
+        if (sec < 60) return sec + 's ago';
+        if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's ago';
+        if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm ago';
+        return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h ago';
+    }
+
+    // Speed = delta of cumulative bytes between two polls (same approach as wg-easy)
+    window.speedStore = window.speedStore || {};
+    function computeRates(clientId, userData) {
+        const rx = userData.dataReceivedBytes, tx = userData.dataSentBytes;
+        if (rx === undefined || tx === undefined) return null;
+        const now = Date.now();
+        const prev = window.speedStore[clientId];
+        window.speedStore[clientId] = { ts: now, rx: rx, tx: tx };
+        if (!prev) return { rx: 0, tx: 0, active: false };
+        const dt = (now - prev.ts) / 1000;
+        if (dt <= 0.5) return { rx: 0, tx: 0, active: false };
+        // Counter reset (peer re-created) must not produce negative spikes
+        const rxRate = Math.max(0, (rx - prev.rx) / dt);
+        const txRate = Math.max(0, (tx - prev.tx) / dt);
+        return { rx: rxRate, tx: txRate, active: rxRate > 0 || txRate > 0 };
     }
 
     function escapeHtml(str) {
