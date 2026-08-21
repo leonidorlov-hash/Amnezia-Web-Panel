@@ -390,5 +390,6 @@
   "rename": "تغییر نام",
   "connection_renamed": "اتصال تغییر نام یافت",
   "enter_connection_name": "نام جدید اتصال را وارد کنید",
-  "config_saved": "پیکربندی ذخیره شد"
+  "config_saved": "پیکربندی ذخیره شد",
+  "conn_warning_text": "⚠️ هشدار: در {date} ساعت {time} تعداد {count} اتصال باز شد!"
 }

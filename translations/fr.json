@@ -390,5 +390,6 @@
   "rename": "Renommer",
   "connection_renamed": "Connexion renommée",
   "enter_connection_name": "Saisir un nouveau nom de connexion",
-  "config_saved": "Configuration enregistrée"
+  "config_saved": "Configuration enregistrée",
+  "conn_warning_text": "⚠️ Attention : {count} connexions ouvertes le {date} à {time} !"
 }

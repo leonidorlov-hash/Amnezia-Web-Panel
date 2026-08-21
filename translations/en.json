@@ -423,5 +423,6 @@
   "rename": "Rename",
   "connection_renamed": "Connection renamed",
   "enter_connection_name": "Enter a new connection name",
-  "config_saved": "Config saved"
+  "config_saved": "Config saved",
+  "conn_warning_text": "⚠️ Warning: {count} connections opened at {time} on {date}!"
 }
