@@ -140,6 +140,10 @@ class AWGManager:
 
     def __init__(self, ssh_manager):
         self.ssh = ssh_manager
+        # Short-TTL cache for the server config: get_clients and friends read
+        # the same awg0.conf 3-4 times per poll; 5s TTL collapses those into
+        # one read without serving stale data across user actions.
+        self._config_cache = {}
 
     def _base_protocol(self, protocol_type):
         """Return base protocol for instance keys like awg__2."""
@@ -735,17 +739,11 @@ tail -f /dev/null
 
     # ===================== CLIENT MANAGEMENT =====================
 
-    def _get_clients_table(self, protocol_type):
-        """Get the clients table from the server."""
-        container_name = self._container_name(protocol_type)
-        clients_table_path = self._clients_table_path()
-
-        out, err, code = self.ssh.run_sudo_command(
-            f"docker exec -i {container_name} cat {clients_table_path} 2>/dev/null"
-        )
-        if code != 0 or not out.strip():
+    @staticmethod
+    def _parse_clients_table_text(out):
+        """Parse clientsTable JSON text into the clients list."""
+        if not out or not out.strip():
             return []
-
         try:
             data = json.loads(out)
             if isinstance(data, list):
@@ -764,6 +762,18 @@ tail -f /dev/null
         except json.JSONDecodeError:
             return []
 
+    def _get_clients_table(self, protocol_type):
+        """Get the clients table from the server."""
+        container_name = self._container_name(protocol_type)
+        clients_table_path = self._clients_table_path()
+
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} cat {clients_table_path} 2>/dev/null"
+        )
+        if code != 0 or not out.strip():
+            return []
+        return self._parse_clients_table_text(out)
+
     def _save_clients_table(self, protocol_type, clients_table):
         """Save the clients table to the server."""
         container_name = self._container_name(protocol_type)
@@ -777,8 +787,12 @@ tail -f /dev/null
         )
         self.ssh.run_command("rm -f /tmp/_amnz_clients.json")
 
-    def _get_server_config(self, protocol_type):
-        """Get the server WireGuard config."""
+    def _get_server_config(self, protocol_type, use_cache=True):
+        """Get the server WireGuard config (5s TTL cache inside)."""
+        if use_cache:
+            cached = self._config_cache.get(protocol_type)
+            if cached and time.time() - cached[0] < 5:
+                return cached[1]
         container_name = self._container_name(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
 
@@ -787,7 +801,11 @@ tail -f /dev/null
         )
         if code != 0:
             raise RuntimeError(f"Failed to get server config: {err}")
+        self._config_cache[protocol_type] = (time.time(), out)
         return out
+
+    def _invalidate_config_cache(self, protocol_type):
+        self._config_cache.pop(protocol_type, None)
 
     @staticmethod
     def _sanitize_server_config(config_content):
@@ -810,6 +828,7 @@ tail -f /dev/null
         config_content = self._sanitize_server_config(config_content)
         container_name = self._container_name(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
+        self._invalidate_config_cache(protocol_type)
 
         # Upload new config into container via SFTP + docker cp
         self.ssh.upload_file(config_content.replace('\r\n', '\n'), "/tmp/_amnz_edit_config.conf")
@@ -1037,13 +1056,9 @@ tail -f /dev/null
             or self._extract_ipv4(user_data.get('allowed_ip'))
         )
 
-    def _parse_peers_from_config(self, protocol_type):
-        """Parse [Peer] sections from WireGuard server config and return dict of pubkey -> {allowedIps}."""
-        try:
-            config = self._get_server_config(protocol_type)
-        except Exception:
-            return {}
-
+    @staticmethod
+    def _parse_peers_from_config_text(config):
+        """Parse [Peer] sections from config text -> {pubkey: {allowedIps}}."""
         peers = {}
         current_key = None
         for line in config.split('\n'):
@@ -1057,15 +1072,41 @@ tail -f /dev/null
                 peers[current_key]['allowedIps'] = line.split('=', 1)[1].strip()
         return peers
 
+    def _parse_peers_from_config(self, protocol_type):
+        """Parse [Peer] sections from WireGuard server config and return dict of pubkey -> {allowedIps}."""
+        try:
+            config = self._get_server_config(protocol_type)
+        except Exception:
+            return {}
+        return self._parse_peers_from_config_text(config)
+
     def get_clients(self, protocol_type):
         """Get list of all clients."""
-        clients_table = self._get_clients_table(protocol_type)
-
-        # Also try to get live data from wg show
+        # One SSH round-trip for everything instead of ~9 sequential commands.
         try:
-            wg_show_data = self._wg_show(protocol_type)
-        except Exception:
-            wg_show_data = {}
+            bundle = self._fetch_clients_bundle(protocol_type)
+        except Exception as e:
+            logger.warning(f'get_clients: bundle fetch failed, using legacy path: {e}')
+            bundle = None
+
+        if bundle is not None:
+            clients_table = bundle['clients_table']
+            wg_show_data = bundle['wg_show']
+            conf_peers = self._parse_peers_from_config_text(bundle['config'])
+            conn_counts = bundle['conn_counts']
+            conn_warnings = bundle['conn_warnings']
+        else:
+            clients_table = self._get_clients_table(protocol_type)
+            try:
+                wg_show_data = self._wg_show(protocol_type)
+            except Exception:
+                wg_show_data = {}
+            try:
+                conf_peers = self._parse_peers_from_config(protocol_type)
+            except Exception:
+                conf_peers = {}
+            conn_counts = None
+            conn_warnings = None
 
         # Enrich clients table with wg show data
         known_ids = set()
@@ -1085,7 +1126,6 @@ tail -f /dev/null
 
         # Pick up peers from conf that are NOT in clientsTable (created via native Amnezia app)
         try:
-            conf_peers = self._parse_peers_from_config(protocol_type)
             for pub_key, peer_info in conf_peers.items():
                 if pub_key in known_ids:
                     continue  # already in table
@@ -1120,9 +1160,14 @@ tail -f /dev/null
         # Connection flood monitoring: count conntrack entries per peer IP
         # and attach recent warnings (P2P/torrent detection).
         try:
-            conn_counts = self._count_connections_by_ip(protocol_type)
-            conn_warnings = (self._update_conn_warnings(protocol_type, conn_counts)
-                             if conn_counts else self._load_conn_warnings(protocol_type))
+            if conn_counts is None:  # legacy fallback path: fetch separately
+                conn_counts = self._count_connections_by_ip(protocol_type)
+                conn_warnings = (self._update_conn_warnings(protocol_type, conn_counts)
+                                 if conn_counts else self._load_conn_warnings(protocol_type))
+            elif conn_counts:
+                # bundle path: counts and warnings already fetched in one call
+                conn_warnings = self._update_conn_warnings(protocol_type, conn_counts,
+                                                           warnings=conn_warnings)
             for client in clients_table:
                 user_data = client.get('userData', {})
                 ip = user_data.get('clientIp', '')
@@ -1158,27 +1203,15 @@ tail -f /dev/null
         """Path inside container, next to clientsTable (persisted via volume)."""
         return '/opt/amnezia/awg/conn_warnings.json'
 
-    def _count_connections_by_ip(self, protocol_type):
-        """Count conntrack entries per peer IP.
-
-        Reads /proc/net/nf_conntrack INSIDE the instance container (NAT for
-        the VPN subnet happens in the container's netns, so the host table
-        only shows the container's own IP) and counts entries whose ORIGINAL
-        source IP belongs to the instance subnet.
-        Returns {ip: count}; empty dict if conntrack is unavailable.
-        """
+    def _parse_conntrack_counts(self, protocol_type, out):
+        """Count conntrack entries per peer IP from nf_conntrack text."""
+        if not out or not out.strip():
+            return {}
         try:
             subnet_ip = self._get_subnet_ip(protocol_type)
             cidr = int(self._get_subnet_cidr(protocol_type))
             network = ipaddress.ip_network(f'{subnet_ip}/{cidr}', strict=False)
         except Exception:
-            return {}
-
-        out, err, code = self.ssh.run_sudo_command(
-            f"docker exec -i {self._container_name(protocol_type)} "
-            "sh -c 'head -c 8000000 /proc/net/nf_conntrack 2>/dev/null'"
-        )
-        if code != 0 or not out.strip():
             return {}
 
         counts = {}
@@ -1195,6 +1228,34 @@ tail -f /dev/null
                 continue
         return counts
 
+    def _count_connections_by_ip(self, protocol_type):
+        """Count conntrack entries per peer IP.
+
+        Reads /proc/net/nf_conntrack INSIDE the instance container (NAT for
+        the VPN subnet happens in the container's netns, so the host table
+        only shows the container's own IP) and counts entries whose ORIGINAL
+        source IP belongs to the instance subnet.
+        Returns {ip: count}; empty dict if conntrack is unavailable.
+        """
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {self._container_name(protocol_type)} "
+            "sh -c 'head -c 8000000 /proc/net/nf_conntrack 2>/dev/null'"
+        )
+        if code != 0 or not out.strip():
+            return {}
+        return self._parse_conntrack_counts(protocol_type, out)
+
+    @staticmethod
+    def _parse_conn_warnings_text(out):
+        """Parse conn_warnings.json text -> {ip: [{ts, count}, ...]}."""
+        if not out or not out.strip():
+            return {}
+        try:
+            data = json.loads(out)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
     def _load_conn_warnings(self, protocol_type):
         """Load recorded warnings {ip: [{ts, count}, ...]} from the container."""
         container_name = self._container_name(protocol_type)
@@ -1203,11 +1264,7 @@ tail -f /dev/null
         )
         if code != 0 or not out.strip():
             return {}
-        try:
-            data = json.loads(out)
-            return data if isinstance(data, dict) else {}
-        except json.JSONDecodeError:
-            return {}
+        return self._parse_conn_warnings_text(out)
 
     def _save_conn_warnings(self, protocol_type, warnings):
         """Persist warnings into the container (same pattern as clientsTable)."""
@@ -1218,13 +1275,15 @@ tail -f /dev/null
         )
         self.ssh.run_command("rm -f /tmp/_amnz_connwarn.json")
 
-    def _update_conn_warnings(self, protocol_type, counts):
+    def _update_conn_warnings(self, protocol_type, counts, warnings=None):
         """Record a warning for every peer above CONN_WARN_THRESHOLD.
 
         At most one warning per peer per CONN_WARN_COOLDOWN seconds; only the
         last CONN_WARN_MAX_EVENTS are kept. Returns {ip: [{ts, count}, ...]}.
+        Pass preloaded `warnings` to skip the extra SSH read.
         """
-        warnings = self._load_conn_warnings(protocol_type)
+        if warnings is None:
+            warnings = self._load_conn_warnings(protocol_type)
         now = int(time.time())
         changed = False
         for ip, count in counts.items():
@@ -1243,17 +1302,8 @@ tail -f /dev/null
                 logger.warning(f'failed to save conn warnings: {e}')
         return warnings
 
-    def _wg_show(self, protocol_type):
-        """Run 'wg show all' and parse output."""
-        container_name = self._container_name(protocol_type)
-        wg_bin = self._wg_binary(protocol_type)
-
-        out, err, code = self.ssh.run_sudo_command(
-            f"docker exec -i {container_name} bash -c '{wg_bin} show all'"
-        )
-        if code != 0 or not out.strip():
-            return {}
-
+    def _parse_wg_show_text(self, out):
+        """Parse 'awg show all' output into {pubkey: {...}}."""
         result = {}
         current_peer = None
 
@@ -1282,11 +1332,78 @@ tail -f /dev/null
 
         return result
 
+    def _fetch_clients_bundle(self, protocol_type):
+        """Fetch everything get_clients needs in ONE SSH round-trip.
+
+        Combines clientsTable + awg show + server config + conntrack +
+        recorded warnings into a single 'docker exec bash -c' call, replacing
+        ~9 sequential SSH commands (each a cross-country round-trip).
+        """
+        container_name = self._container_name(protocol_type)
+        wg_bin = self._wg_binary(protocol_type)
+        paths = ' '.join(self._config_path_candidates(protocol_type))
+        script = (
+            'echo __AWP_SEP_CLIENTS__; '
+            f'cat {self._clients_table_path()} 2>/dev/null; '
+            'echo __AWP_SEP_WGSHOW__; '
+            f'{wg_bin} show all 2>/dev/null; '
+            'echo __AWP_SEP_CONFIG__; '
+            f'for p in {paths}; do if [ -f "$p" ]; then cat "$p"; break; fi; done; '
+            'echo __AWP_SEP_CONNTRACK__; '
+            'head -c 8000000 /proc/net/nf_conntrack 2>/dev/null; '
+            'echo __AWP_SEP_WARNINGS__; '
+            f'cat {self._conn_warnings_path()} 2>/dev/null'
+        )
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} bash -c '{script}'"
+        )
+        if code != 0:
+            raise RuntimeError(f"bundle fetch failed: {err}")
+
+        sections = {}
+        current = None
+        for line in (out or '').split('\n'):
+            stripped = line.strip()
+            if stripped.startswith('__AWP_SEP_'):
+                current = stripped
+                sections[current] = []
+            elif current is not None:
+                sections[current].append(line)
+
+        def sec(name):
+            return '\n'.join(sections.get(f'__AWP_SEP_{name}__', []))
+
+        config_text = sec('CONFIG')
+        if config_text.strip():
+            # Prime the cache: subnet IP/CIDR and peer parsing reuse this
+            self._config_cache[protocol_type] = (time.time(), config_text)
+
+        return {
+            'clients_table': self._parse_clients_table_text(sec('CLIENTS')),
+            'wg_show': self._parse_wg_show_text(sec('WGSHOW')),
+            'config': config_text,
+            'conn_counts': self._parse_conntrack_counts(protocol_type, sec('CONNTRACK')),
+            'conn_warnings': self._parse_conn_warnings_text(sec('WARNINGS')),
+        }
+
+    def _wg_show(self, protocol_type):
+        """Run 'wg show all' and parse output."""
+        container_name = self._container_name(protocol_type)
+        wg_bin = self._wg_binary(protocol_type)
+
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} bash -c '{wg_bin} show all'"
+        )
+        if code != 0 or not out.strip():
+            return {}
+        return self._parse_wg_show_text(out)
+
     def add_client(self, protocol_type, client_name, server_host, port):
         """
         Add a new client/peer to the AWG config.
         Returns the client config as a string for the .conf file.
         """
+        self._invalidate_config_cache(protocol_type)
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
@@ -1495,6 +1612,7 @@ PersistentKeepalive = 25
 
     def toggle_client(self, protocol_type, client_id, enable):
         """Enable or disable a client by adding/removing their [Peer] from server config."""
+        self._invalidate_config_cache(protocol_type)
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
@@ -1613,6 +1731,7 @@ AllowedIPs = {allowed_ips}
 
     def remove_client(self, protocol_type, client_id):
         """Remove a client from AWG config (mirrors revokeWireGuard)."""
+        self._invalidate_config_cache(protocol_type)
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
