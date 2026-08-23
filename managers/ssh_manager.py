@@ -93,15 +93,19 @@ class SSHManager:
 
         logger.info(f"Running command: {command[:100]}...")
         stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        
+
         # Crucial: set timeout on the channel to prevent hanging indefinitely
         stdout.channel.settimeout(timeout)
         stderr.channel.settimeout(timeout)
-        
+
         try:
-            exit_code = stdout.channel.recv_exit_status()
+            # Read stdout/stderr BEFORE recv_exit_status(): with a large output
+            # (e.g. /proc/net/nf_conntrack, up to 8MB) the channel window fills
+            # up, the remote command cannot exit, and recv_exit_status() would
+            # deadlock until the timeout. (Classic paramiko pitfall.)
             out = stdout.read().decode('utf-8', errors='replace').strip()
             err = stderr.read().decode('utf-8', errors='replace').strip()
+            exit_code = stdout.channel.recv_exit_status()
         except Exception as e:
             logger.error(f"Command timed out or failed to read: {e}")
             # Drop the broken session so the next connect() re-establishes it
