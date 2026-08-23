@@ -1352,13 +1352,16 @@ tail -f /dev/null
             'echo __AWP_SEP_CONNTRACK__; '
             'head -c 8000000 /proc/net/nf_conntrack 2>/dev/null; '
             'echo __AWP_SEP_WARNINGS__; '
-            f'cat {self._conn_warnings_path()} 2>/dev/null'
+            f'cat {self._conn_warnings_path()} 2>/dev/null; '
+            'echo __AWP_SEP_END__'  # always succeed: last cat may find no file
         )
         out, err, code = self.ssh.run_sudo_command(
             f"docker exec -i {container_name} bash -c '{script}'"
         )
-        if code != 0:
-            raise RuntimeError(f"bundle fetch failed: {err}")
+        # Do not trust the exit code alone: docker exec propagates the exit
+        # status of inner commands that may legitimately fail (missing files).
+        if '__AWP_SEP_CLIENTS__' not in (out or ''):
+            raise RuntimeError(f"bundle fetch failed: {err} (exit {code})")
 
         sections = {}
         current = None
