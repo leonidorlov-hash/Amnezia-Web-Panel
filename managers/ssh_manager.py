@@ -24,7 +24,23 @@ class SSHManager:
         self._is_root = (username == 'root')
 
     def connect(self):
-        """Establish SSH connection to the server."""
+        """Establish SSH connection to the server.
+
+        Reuses an already-open session: the panel pools one SSHManager per
+        server (see app.get_ssh). Remote sshd brute-force limiters (e.g.
+        nftables 'limit rate over 3/minute' on new TCP connections) drop
+        frequent new connections, which showed up as random 15s UI freezes.
+        """
+        if self.client is not None:
+            transport = self.client.get_transport()
+            if transport is not None and transport.is_active():
+                return True
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -56,9 +72,18 @@ class SSHManager:
         return True
 
     def disconnect(self):
-        """Close SSH connection."""
+        """Keep the session open: connections are pooled and shared across
+        requests (see app.get_ssh). Use force_disconnect() to really close
+        it (one-shot credential checks, server edit/delete)."""
+        return
+
+    def force_disconnect(self):
+        """Close the SSH connection for real."""
         if self.client:
-            self.client.close()
+            try:
+                self.client.close()
+            except Exception:
+                pass
             self.client = None
 
     def run_command(self, command, timeout=60):
@@ -79,6 +104,8 @@ class SSHManager:
             err = stderr.read().decode('utf-8', errors='replace').strip()
         except Exception as e:
             logger.error(f"Command timed out or failed to read: {e}")
+            # Drop the broken session so the next connect() re-establishes it
+            self.force_disconnect()
             out, err, exit_code = "", str(e), -1
 
         if exit_code != 0:

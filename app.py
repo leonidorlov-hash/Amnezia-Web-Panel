@@ -192,14 +192,40 @@ async def save_data_async(data):
         await asyncio.to_thread(save_data, data)
 
 
+SSH_POOL = {}
+SSH_POOL_LOCK = threading.Lock()
+
+
 def get_ssh(server):
-    return SSHManager(
-        host=server['host'],
-        port=server.get('ssh_port', 22),
-        username=server['username'],
-        password=server.get('password'),
-        private_key=server.get('private_key'),
-    )
+    """Return a pooled SSHManager for the server.
+
+    One persistent SSH session is shared across requests instead of a fresh
+    TCP+SSH handshake per call: remote sshd brute-force limiters (nftables
+    'limit rate over 3/minute' on new connections to the SSH port) otherwise
+    drop the panel's frequent connections, causing random 15s UI freezes.
+    """
+    key = (server.get('host'), int(server.get('ssh_port') or 22), server.get('username'))
+    with SSH_POOL_LOCK:
+        ssh = SSH_POOL.get(key)
+        if ssh is None:
+            ssh = SSHManager(
+                host=server['host'],
+                port=server.get('ssh_port', 22),
+                username=server['username'],
+                password=server.get('password'),
+                private_key=server.get('private_key'),
+            )
+            SSH_POOL[key] = ssh
+        return ssh
+
+
+def evict_ssh_pool(server):
+    """Drop the pooled session for a server (used on edit/delete)."""
+    key = (server.get('host'), int(server.get('ssh_port') or 22), server.get('username'))
+    with SSH_POOL_LOCK:
+        ssh = SSH_POOL.pop(key, None)
+    if ssh is not None:
+        ssh.force_disconnect()
 
 
 def get_panel_local_url(request: Optional[Request] = None):
@@ -2038,7 +2064,7 @@ async def api_add_server(request: Request, req: AddServerRequest):
         try:
             ssh.connect()
             server_info = ssh.test_connection()
-            ssh.disconnect()
+            ssh.force_disconnect()  # one-shot check, not a pooled session
         except Exception as e:
             return JSONResponse({'error': f'Connection failed: {str(e)}'}, status_code=400)
 
@@ -2069,6 +2095,7 @@ async def api_edit_server(request: Request, server_id: int, req: EditServerReque
         if server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         server = data['servers'][server_id]
+        old_server = dict(server)  # for pool eviction after the edit
 
         new_host = (req.host or '').strip() or server['host']
         new_user = (req.username or '').strip() or server['username']
@@ -2093,7 +2120,7 @@ async def api_edit_server(request: Request, server_id: int, req: EditServerReque
         try:
             ssh.connect()
             server_info = ssh.test_connection()
-            ssh.disconnect()
+            ssh.force_disconnect()  # one-shot check, not a pooled session
         except Exception as e:
             return JSONResponse({'error': f'Connection failed: {e}'}, status_code=400)
 
@@ -2105,6 +2132,7 @@ async def api_edit_server(request: Request, server_id: int, req: EditServerReque
         server['private_key'] = new_key
         server['server_info'] = server_info
         save_data(data)
+        evict_ssh_pool(old_server)  # drop the stale pooled session
         return {'status': 'success', 'server_info': server_info}
     except Exception as e:
         logger.exception("Error editing server")
@@ -2187,6 +2215,7 @@ async def api_delete_server(request: Request, server_id: int):
         if server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         data['servers'].pop(server_id)
+        evict_ssh_pool(server)  # close the pooled session of the removed server
         # Clean up connections for this server
         data['user_connections'] = [c for c in data.get('user_connections', []) if c.get('server_id') != server_id]
         # Adjust server_ids for connections pointing to higher indices
