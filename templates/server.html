@@ -151,6 +151,9 @@
                 <button class="btn btn-secondary btn-sm" onclick="openManagementModal()" id="managementBtn">
                     <span>⚙️</span> {{ _('management') }}
                 </button>
+                <button class="btn btn-secondary btn-sm" onclick="openHostTuning()" id="hostTuningBtn">
+                    <span>📊</span> {{ _('host_tuning') }}
+                </button>
             </div>
         </div>
     </div>
@@ -924,7 +927,6 @@
         <div class="config-display" style="margin-top:var(--space-md);">
             <!-- Hidden input to store current proto -->
             <input type="hidden" id="serverConfigProto" value="" />
-            <div id="serverConfigTuning" style="display:none; margin-bottom:var(--space-md); padding:var(--space-sm) var(--space-md); border:1px solid var(--border-color, rgba(128,128,128,.25)); border-radius:8px; font-size:12px; line-height:1.6;"></div>
             <div class="config-editor-wrap">
                 <textarea class="form-input config-editor-fallback" id="serverConfigText"></textarea>
             </div>
@@ -947,9 +949,17 @@
         </div>
     </div>
 </div>
+<!-- ===== Host Tuning Modal ===== -->
+<div class="modal-backdrop" id="hostTuningModal">
+    <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+            <h2 class="modal-title">📊 {{ _('host_tuning') }}</h2>
+            <button class="modal-close" onclick="closeModal('hostTuningModal')">×</button>
+        </div>
+        <div id="hostTuningBody" style="margin-top:var(--space-md); font-size:12px; line-height:1.6;"></div>
+    </div>
+</div>
 {% endblock %}
-
-{% block scripts %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/nginx/nginx.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
@@ -1688,7 +1698,6 @@
             const res = await apiCall(`/api/servers/${SERVER_ID}/server_config`, 'POST', { protocol: proto });
             document.getElementById('serverConfigModalTitle').textContent = `${_('server_config')} — ${name}`;
             document.getElementById('serverConfigProto').value = proto;
-            renderTuningInfo(res.tuning);
             setEditorValue('serverConfigText', res.config || '', { mode: editorModeFor('server', proto) });
             serverConfigFilename = `server_${proto}.conf`;
             openModal('serverConfigModal');
@@ -1698,33 +1707,43 @@
         }
     }
 
-    // Render container name + network tuning summary in the server config modal
-    function renderTuningInfo(t) {
-        const el = document.getElementById('serverConfigTuning');
+    // Host network tuning modal (server-level)
+    async function openHostTuning() {
+        try {
+            showToast(_('loading'), 'info');
+            const res = await apiCall(`/api/servers/${SERVER_ID}/host_tuning`, 'POST', {});
+            renderHostTuning(res);
+            openModal('hostTuningModal');
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        }
+    }
+
+    function renderHostTuning(t) {
+        const el = document.getElementById('hostTuningBody');
         if (!el) return;
-        if (!t) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        if (!t) { el.innerHTML = ''; return; }
         const esc = s => String(s ?? '—').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
         const row = (k, v) => `<div style="display:flex;justify-content:space-between;gap:12px;"><span style="opacity:.7">${k}</span><code>${esc(v)}</code></div>`;
-        let html = `<div style="font-weight:600;margin-bottom:4px;">🐳 ${esc(t.container)} ${t.running ? '<span style="color:var(--success,#3fb950)">● online</span>' : '<span style="color:var(--danger,#f85149)">● stopped</span>'}</div>`;
-        if (Object.keys(t.host || {}).length) {
-            html += `<div style="opacity:.85;margin:4px 0 2px;">Host</div>`;
-            const h = t.host;
-            html += row('congestion control', h.cc);
-            html += row('qdisc', h.qdisc);
-            if (h.conntrack) html += row('conntrack', `${h.conntrack_count || 0} / ${h.conntrack}`);
+        let html = '';
+        const h = t.host || {};
+        html += `<div style="opacity:.85;font-weight:600;margin-bottom:2px;">Host</div>`;
+        html += row('congestion control', h.cc);
+        html += row('qdisc', h.qdisc);
+        html += row('conntrack', `${h.conntrack_count || 0} / ${h.conntrack || '—'}`);
+        html += row('netdev_max_backlog', h.netdev_max_backlog);
+        html += row('somaxconn', h.somaxconn);
+        for (const c of (t.containers || [])) {
+            html += `<div style="font-weight:600;margin:12px 0 2px;">🐳 ${esc(c.name)} ${c.running ? '<span style="color:var(--success,#3fb950)">● online</span>' : '<span style="color:var(--danger,#f85149)">● stopped</span>'}</div>`;
+            if (c.running && c.ct) {
+                html += row('rmem_max / wmem_max', `${c.ct['net.core.rmem_max'] || '—'} / ${c.ct['net.core.wmem_max'] || '—'}`);
+                html += row('tcp_fastopen', c.ct['net.ipv4.tcp_fastopen']);
+                html += row('tcp_mtu_probing', c.ct['net.ipv4.tcp_mtu_probing']);
+                html += row('nofile (ulimit -n)', c.ct['nofile']);
+            }
         }
-        if (t.running && Object.keys(t.ct || {}).length) {
-            const c = t.ct;
-            html += `<div style="opacity:.85;margin:6px 0 2px;">Container</div>`;
-            html += row('rmem_max / wmem_max', `${c['net.core.rmem_max'] || '—'} / ${c['net.core.wmem_max'] || '—'}`);
-            html += row('netdev_max_backlog', c['net.core.netdev_max_backlog']);
-            html += row('somaxconn', c['net.core.somaxconn']);
-            html += row('tcp_fastopen', c['net.ipv4.tcp_fastopen']);
-            html += row('tcp_mtu_probing', c['net.ipv4.tcp_mtu_probing']);
-            html += row('nofile (ulimit -n)', c['nofile']);
-        }
+        if (!(t.containers || []).length) html += `<div style="opacity:.6;margin-top:8px;">Нет AWG-контейнеров</div>`;
         el.innerHTML = html;
-        el.style.display = 'block';
     }
 
     // Save server config changes

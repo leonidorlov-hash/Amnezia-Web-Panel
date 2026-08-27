@@ -438,5 +438,6 @@
   "reset_traffic_confirm": "Сбросить текущий трафик пользователя? Общая статистика сохранится.",
   "traffic_reset_success": "Трафик сброшен",
   "conn_warning_text": "⚠️ Внимание: {date} в {time} открыто {count} соединений!",
-  "port_in_use_by": "Порт {port} уже занят ({owner}). Выберите другой порт."
+  "port_in_use_by": "Порт {port} уже занят ({owner}). Выберите другой порт.",
+  "host_tuning": "Конфигурация"
 }

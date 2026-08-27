@@ -3030,7 +3030,6 @@ async def api_server_config(request: Request, server_id: int, req: ProtocolReque
         server = data['servers'][server_id]
         ssh = get_ssh(server)
         ssh.connect()
-        tuning = None
         if protocol_base(req.protocol) == 'xray':
             from managers.xray_manager import XrayManager
             mgr = XrayManager(ssh, req.protocol)
@@ -3052,17 +3051,31 @@ async def api_server_config(request: Request, server_id: int, req: ProtocolReque
         else:
             mgr = AWGManager(ssh)
             config = mgr._get_server_config(req.protocol)
-            try:
-                tuning = mgr.get_tuning_info(req.protocol)
-            except Exception:
-                tuning = None
         ssh.disconnect()
-        resp = {'config': config}
-        if tuning:
-            resp['tuning'] = tuning
-        return resp
+        return {'config': config}
     except Exception as e:
         logger.exception("Error getting server config")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/host_tuning', tags=["Protocols"])
+async def api_host_tuning(request: Request, server_id: int):
+    """Server-level network tuning summary (host sysctls + AWG containers)."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        ssh = get_ssh(server)
+        ssh.connect()
+        mgr = AWGManager(ssh)
+        info = mgr.get_host_tuning()
+        ssh.disconnect()
+        return info
+    except Exception as e:
+        logger.exception("Error getting host tuning info")
         return JSONResponse({'error': str(e)}, status_code=500)
 
 

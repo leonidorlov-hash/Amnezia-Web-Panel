@@ -490,40 +490,46 @@ fi
             logger.warning(f"setup_host_tuning warning: {err}")
         return True
 
-    def get_tuning_info(self, protocol_type):
-        """Read live network-tuning state (host + container) for the UI.
-
-        Returns a dict with container name and key=value lines; safe to call
-        even when the container is stopped (container values will be empty).
+    def get_host_tuning(self):
+        """Read live network-tuning state for the whole server (host + all
+        AWG containers). Used by the server-level "Host tuning" modal.
         """
-        container = self._container_name(protocol_type)
-        script = f"""
+        script = """
 echo "HOST_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
 echo "HOST_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)"
 echo "HOST_CONNTRACK=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
 echo "HOST_CONNTRACK_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
-if docker ps --format '{{{{.Names}}}}' | grep -qx "{container}"; then
-  echo "CONTAINER_RUNNING=1"
-  docker exec {container} sh -c 'for p in net.core.rmem_max net.core.wmem_max net.core.netdev_max_backlog net.core.somaxconn net.ipv4.tcp_fastopen net.ipv4.tcp_mtu_probing; do echo "CT_$p=$(sysctl -n $p 2>/dev/null)"; done; echo "CT_NOFILE=$(ulimit -n)"' 2>/dev/null
-else
-  echo "CONTAINER_RUNNING=0"
-fi
+echo "HOST_BACKLOG=$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)"
+echo "HOST_SOMAXCONN=$(sysctl -n net.core.somaxconn 2>/dev/null)"
+for c in $(docker ps -a --format '{{.Names}}' | grep '^amnezia-awg' | sort); do
+  echo "CT_NAME=$c"
+  if docker ps --format '{{.Names}}' | grep -qx "$c"; then
+    echo "CT_RUNNING=1"
+    docker exec "$c" sh -c 'for p in net.core.rmem_max net.core.wmem_max net.ipv4.tcp_fastopen net.ipv4.tcp_mtu_probing; do echo "CTK_$p=$(sysctl -n $p 2>/dev/null)"; done; echo "CTK_nofile=$(ulimit -n)"' 2>/dev/null
+  else
+    echo "CT_RUNNING=0"
+  fi
+done
 """
-        out, err, code = self.ssh.run_sudo_command(script, timeout=30)
-        info = {'container': container, 'running': False, 'host': {}, 'ct': {}}
+        out, err, code = self.ssh.run_sudo_command(script, timeout=60)
+        info = {'host': {}, 'containers': []}
         if code != 0 or not out:
             return info
+        current = None
         for line in out.splitlines():
             if '=' not in line:
                 continue
             key, _, val = line.partition('=')
             key, val = key.strip(), val.strip()
-            if key == 'CONTAINER_RUNNING':
-                info['running'] = val == '1'
-            elif key.startswith('HOST_'):
+            if key.startswith('HOST_'):
                 info['host'][key[5:].lower()] = val
-            elif key.startswith('CT_'):
-                info['ct'][key[3:].lower()] = val
+            elif key == 'CT_NAME':
+                current = {'name': val, 'running': False, 'ct': {}}
+                info['containers'].append(current)
+            elif key == 'CT_RUNNING' and current is not None:
+                current['running'] = val == '1'
+            elif key.startswith('CTK_') and current is not None:
+                current['ct'][key[4:]] = val
         return info
 
     def install_protocol(self, protocol_type, port=None, awg_params=None):
