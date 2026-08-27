@@ -477,8 +477,11 @@ if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bb
     sysctl -w net.ipv4.tcp_congestion_control=bbr
 fi
 if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
-    printf '%s\\n' 'net.netfilter.nf_conntrack_max = 262144' > /etc/sysctl.d/98-awp-conntrack.conf
-    sysctl -w net.netfilter.nf_conntrack_max=262144
+    cur=$(cat /proc/sys/net/netfilter/nf_conntrack_max)
+    if [ "$cur" -lt 262144 ] 2>/dev/null; then
+        printf '%s\\n' 'net.netfilter.nf_conntrack_max = 262144' > /etc/sysctl.d/98-awp-conntrack.conf
+        sysctl -w net.netfilter.nf_conntrack_max=262144
+    fi
 fi
 """
         try:
