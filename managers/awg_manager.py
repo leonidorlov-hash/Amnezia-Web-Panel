@@ -593,6 +593,7 @@ fi
 -p {port}:{port}/udp \
 -v /lib/modules:/lib/modules \
 --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
+--ulimit nofile=51200:51200 \
 --name {container_name} \
 {container_name}"""
 
