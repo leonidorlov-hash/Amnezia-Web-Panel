@@ -451,6 +451,34 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
         self.ssh.run_sudo_script(script)
         return True
 
+    def setup_host_tuning(self):
+        """Enable BBR congestion control on the host (with persistence).
+
+        BBR is available in all kernels >= 4.9 (any modern Debian/Ubuntu).
+        If the tcp_bbr module is not loaded, load it and persist across
+        reboots. Falls back silently when the kernel has no BBR support.
+        """
+        script = """
+set -e
+if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    modprobe tcp_bbr 2>/dev/null || true
+fi
+if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    echo tcp_bbr > /etc/modules-load.d/awp-bbr.conf
+    printf '%s\\n' \\
+        'net.core.default_qdisc = fq' \\
+        'net.ipv4.tcp_congestion_control = bbr' \\
+        > /etc/sysctl.d/99-awp-bbr.conf
+    sysctl -w net.core.default_qdisc=fq
+    sysctl -w net.ipv4.tcp_congestion_control=bbr
+fi
+"""
+        try:
+            self.ssh.run_sudo_script(script)
+        except Exception as err:
+            logger.warning(f"setup_host_tuning warning: {err}")
+        return True
+
     def install_protocol(self, protocol_type, port=None, awg_params=None):
         """
         Full installation of AWG or AWG-Legacy protocol.
@@ -515,8 +543,32 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
             f"\n"
             f"RUN mkdir -p /opt/amnezia\n"
             f'RUN echo "#!/bin/bash" > /opt/amnezia/start.sh && '
+            f'echo "sysctl -p /etc/sysctl.conf 2>/dev/null || true" >> /opt/amnezia/start.sh && '
             f'echo "tail -f /dev/null" >> /opt/amnezia/start.sh\n'
             f"RUN chmod a+x /opt/amnezia/start.sh\n"
+            f"\n"
+            f"# Network tuning (mirrors AmneziaVPN container tuning)\n"
+            f"RUN printf '%s\\n' \\\n"
+            f"'fs.file-max = 51200' \\\n"
+            f"'net.core.rmem_max = 67108864' \\\n"
+            f"'net.core.wmem_max = 67108864' \\\n"
+            f"'net.core.netdev_max_backlog = 250000' \\\n"
+            f"'net.core.somaxconn = 4096' \\\n"
+            f"'net.ipv4.tcp_syncookies = 1' \\\n"
+            f"'net.ipv4.tcp_tw_reuse = 1' \\\n"
+            f"'net.ipv4.tcp_fin_timeout = 30' \\\n"
+            f"'net.ipv4.tcp_keepalive_time = 1200' \\\n"
+            f"'net.ipv4.ip_local_port_range = 10000 65000' \\\n"
+            f"'net.ipv4.tcp_max_syn_backlog = 8192' \\\n"
+            f"'net.ipv4.tcp_max_tw_buckets = 5000' \\\n"
+            f"'net.ipv4.tcp_fastopen = 3' \\\n"
+            f"'net.ipv4.tcp_mem = 25600 51200 102400' \\\n"
+            f"'net.ipv4.tcp_rmem = 4096 87380 67108864' \\\n"
+            f"'net.ipv4.tcp_wmem = 4096 65536 67108864' \\\n"
+            f"'net.ipv4.tcp_mtu_probing = 1' \\\n"
+            f" >> /etc/sysctl.conf && \\\n"
+            f"mkdir -p /etc/security && \\\n"
+            f"printf '%s\\n' '* soft nofile 51200' '* hard nofile 51200' >> /etc/security/limits.conf\n"
             f"\n"
             f'ENTRYPOINT [ "dumb-init", "/opt/amnezia/start.sh" ]\n'
         )
@@ -576,6 +628,11 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
         results.append("Setting up firewall...")
         self.setup_firewall()
         results.append("Firewall configured")
+
+        # Step 9: Host network tuning (BBR)
+        results.append("Applying host network tuning (BBR)...")
+        self.setup_host_tuning()
+        results.append("Host network tuning applied")
 
         return {
             'status': 'success',
@@ -715,6 +772,9 @@ EOF
 
         start_script = f"""#!/bin/bash
 echo "Container startup"
+
+# Apply container network tuning (see Dockerfile)
+sysctl -p /etc/sysctl.conf 2>/dev/null || true
 
 # Read subnet from server config dynamically (IPv4 part of the Address line)
 SUBNET=$(grep '^Address' {config_path} | head -1 | cut -d'=' -f2 | cut -d',' -f1 | tr -d ' ')
@@ -868,6 +928,9 @@ tail -f /dev/null
         quick_bin = self._quick_binary(protocol_type)
         start_script = f"""#!/bin/bash
 echo "Container startup"
+
+# Apply container network tuning (see Dockerfile)
+sysctl -p /etc/sysctl.conf 2>/dev/null || true
 
 # Read subnet from server config dynamically (IPv4 part of the Address line)
 SUBNET=$(grep '^Address' {config_path} | head -1 | cut -d'=' -f2 | cut -d',' -f1 | tr -d ' ')
