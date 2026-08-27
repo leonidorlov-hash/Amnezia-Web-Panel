@@ -2108,6 +2108,16 @@
             return;
         }
 
+        // Skip poll re-renders while the rename editor is open — a full innerHTML
+        // rebuild would destroy the input mid-typing
+        if (isPoll && document.querySelector('#connectionsListInner .rename-editor')) {
+            clearTimeout(window.connPollTimer);
+            if (document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
+            }
+            return;
+        }
+
         if (window.connLoading) return; // don't stack overlapping polls
         window.connLoading = true;
         if (!isPoll) loading.style.display = ''; // silent refresh on polls
