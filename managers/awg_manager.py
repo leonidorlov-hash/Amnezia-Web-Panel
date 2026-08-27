@@ -463,7 +463,12 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
         if awg_params is None:
             base_proto = self._base_protocol(protocol_type)
             awg_params = generate_awg_params(
-                use_ranges=(base_proto in (self.AWG, self.AWG2, self.AWG3)),
+                # Ranged H1-H4 ("min-max") are valid for AWG 2.0, but with AWG 3.1
+            # features (HeaderProtectionKey etc.) current clients fail to
+            # authenticate packets ("invalid mac1" flood, <1 Mbit/s). Until
+            # clients catch up, use fixed random magic headers for AWG 3.1.
+            # See https://github.com/amnezia-vpn/amnezia-client/issues/3073
+            use_ranges=(base_proto in (self.AWG, self.AWG2)),
                 awg3=(base_proto == self.AWG3),
             )
 
