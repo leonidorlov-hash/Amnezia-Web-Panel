@@ -3030,6 +3030,7 @@ async def api_server_config(request: Request, server_id: int, req: ProtocolReque
         server = data['servers'][server_id]
         ssh = get_ssh(server)
         ssh.connect()
+        tuning = None
         if protocol_base(req.protocol) == 'xray':
             from managers.xray_manager import XrayManager
             mgr = XrayManager(ssh, req.protocol)
@@ -3051,8 +3052,15 @@ async def api_server_config(request: Request, server_id: int, req: ProtocolReque
         else:
             mgr = AWGManager(ssh)
             config = mgr._get_server_config(req.protocol)
+            try:
+                tuning = mgr.get_tuning_info(req.protocol)
+            except Exception:
+                tuning = None
         ssh.disconnect()
-        return {'config': config}
+        resp = {'config': config}
+        if tuning:
+            resp['tuning'] = tuning
+        return resp
     except Exception as e:
         logger.exception("Error getting server config")
         return JSONResponse({'error': str(e)}, status_code=500)

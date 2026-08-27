@@ -452,11 +452,15 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
         return True
 
     def setup_host_tuning(self):
-        """Enable BBR congestion control on the host (with persistence).
+        """Enable BBR congestion control and raise conntrack table on the host.
 
         BBR is available in all kernels >= 4.9 (any modern Debian/Ubuntu).
         If the tcp_bbr module is not loaded, load it and persist across
         reboots. Falls back silently when the kernel has no BBR support.
+
+        nf_conntrack_max default (often ~7680 on small VMs) is way too low
+        for a VPN NAT gateway: every client flow = 1 conntrack entry, and a
+        full table makes the kernel drop packets. Raise to 262144.
         """
         script = """
 set -e
@@ -472,12 +476,52 @@ if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bb
     sysctl -w net.core.default_qdisc=fq
     sysctl -w net.ipv4.tcp_congestion_control=bbr
 fi
+if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
+    printf '%s\\n' 'net.netfilter.nf_conntrack_max = 262144' > /etc/sysctl.d/98-awp-conntrack.conf
+    sysctl -w net.netfilter.nf_conntrack_max=262144
+fi
 """
         try:
             self.ssh.run_sudo_script(script)
         except Exception as err:
             logger.warning(f"setup_host_tuning warning: {err}")
         return True
+
+    def get_tuning_info(self, protocol_type):
+        """Read live network-tuning state (host + container) for the UI.
+
+        Returns a dict with container name and key=value lines; safe to call
+        even when the container is stopped (container values will be empty).
+        """
+        container = self._container_name(protocol_type)
+        script = f"""
+echo "HOST_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+echo "HOST_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+echo "HOST_CONNTRACK=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
+echo "HOST_CONNTRACK_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
+if docker ps --format '{{{{.Names}}}}' | grep -qx "{container}"; then
+  echo "CONTAINER_RUNNING=1"
+  docker exec {container} sh -c 'for p in net.core.rmem_max net.core.wmem_max net.core.netdev_max_backlog net.core.somaxconn net.ipv4.tcp_fastopen net.ipv4.tcp_mtu_probing; do echo "CT_$p=$(sysctl -n $p 2>/dev/null)"; done; echo "CT_NOFILE=$(ulimit -n)"' 2>/dev/null
+else
+  echo "CONTAINER_RUNNING=0"
+fi
+"""
+        out, err, code = self.ssh.run_sudo_command(script, timeout=30)
+        info = {'container': container, 'running': False, 'host': {}, 'ct': {}}
+        if code != 0 or not out:
+            return info
+        for line in out.splitlines():
+            if '=' not in line:
+                continue
+            key, _, val = line.partition('=')
+            key, val = key.strip(), val.strip()
+            if key == 'CONTAINER_RUNNING':
+                info['running'] = val == '1'
+            elif key.startswith('HOST_'):
+                info['host'][key[5:].lower()] = val
+            elif key.startswith('CT_'):
+                info['ct'][key[3:].lower()] = val
+        return info
 
     def install_protocol(self, protocol_type, port=None, awg_params=None):
         """

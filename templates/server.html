@@ -924,6 +924,7 @@
         <div class="config-display" style="margin-top:var(--space-md);">
             <!-- Hidden input to store current proto -->
             <input type="hidden" id="serverConfigProto" value="" />
+            <div id="serverConfigTuning" style="display:none; margin-bottom:var(--space-md); padding:var(--space-sm) var(--space-md); border:1px solid var(--border-color, rgba(128,128,128,.25)); border-radius:8px; font-size:12px; line-height:1.6;"></div>
             <div class="config-editor-wrap">
                 <textarea class="form-input config-editor-fallback" id="serverConfigText"></textarea>
             </div>
@@ -1687,6 +1688,7 @@
             const res = await apiCall(`/api/servers/${SERVER_ID}/server_config`, 'POST', { protocol: proto });
             document.getElementById('serverConfigModalTitle').textContent = `${_('server_config')} — ${name}`;
             document.getElementById('serverConfigProto').value = proto;
+            renderTuningInfo(res.tuning);
             setEditorValue('serverConfigText', res.config || '', { mode: editorModeFor('server', proto) });
             serverConfigFilename = `server_${proto}.conf`;
             openModal('serverConfigModal');
@@ -1694,6 +1696,35 @@
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
         }
+    }
+
+    // Render container name + network tuning summary in the server config modal
+    function renderTuningInfo(t) {
+        const el = document.getElementById('serverConfigTuning');
+        if (!el) return;
+        if (!t) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const esc = s => String(s ?? '—').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+        const row = (k, v) => `<div style="display:flex;justify-content:space-between;gap:12px;"><span style="opacity:.7">${k}</span><code>${esc(v)}</code></div>`;
+        let html = `<div style="font-weight:600;margin-bottom:4px;">🐳 ${esc(t.container)} ${t.running ? '<span style="color:var(--success,#3fb950)">● online</span>' : '<span style="color:var(--danger,#f85149)">● stopped</span>'}</div>`;
+        if (Object.keys(t.host || {}).length) {
+            html += `<div style="opacity:.85;margin:4px 0 2px;">Host</div>`;
+            const h = t.host;
+            html += row('congestion control', h.cc);
+            html += row('qdisc', h.qdisc);
+            if (h.conntrack) html += row('conntrack', `${h.conntrack_count || 0} / ${h.conntrack}`);
+        }
+        if (t.running && Object.keys(t.ct || {}).length) {
+            const c = t.ct;
+            html += `<div style="opacity:.85;margin:6px 0 2px;">Container</div>`;
+            html += row('rmem_max / wmem_max', `${c['net.core.rmem_max'] || '—'} / ${c['net.core.wmem_max'] || '—'}`);
+            html += row('netdev_max_backlog', c['net.core.netdev_max_backlog']);
+            html += row('somaxconn', c['net.core.somaxconn']);
+            html += row('tcp_fastopen', c['net.ipv4.tcp_fastopen']);
+            html += row('tcp_mtu_probing', c['net.ipv4.tcp_mtu_probing']);
+            html += row('nofile (ulimit -n)', c['nofile']);
+        }
+        el.innerHTML = html;
+        el.style.display = 'block';
     }
 
     // Save server config changes
