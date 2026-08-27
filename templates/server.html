@@ -2166,11 +2166,17 @@
                     if (userData.quota) metaHtml += `<span class="badge" style="font-size:0.65rem;">Quota: ${formatBytes(userData.quota)}</span>`;
                     if (userData.expiry) metaHtml += `<span class="badge" style="font-size:0.65rem;">⌛ ${formatDate(userData.expiry)}</span>`;
                 } else {
-                    if (handshake) metaHtml += `<span>🤝 ${handshake}</span>`;
+                    // Live UI (restored: calls were lost in upstream merge of PR #88)
+                    const hsSec = parseHandshakeAgo(handshake);
+                    const isOnline = hsSec !== null && hsSec < 180;
+                    if (handshake) metaHtml += `<span class="meta-handshake${isOnline ? ' meta-online' : ''}">🤝 ${formatHandshakeCompact(handshake)}</span>`;
                     // awg show reports transfer from the SERVER perspective:
                     // "received" = client upload, "sent" = client download.
                     if (sent) metaHtml += `<span class="traffic-badge traffic-down">↓ ${sent}</span>`;
                     if (received) metaHtml += `<span class="traffic-badge traffic-up">↑ ${received}</span>`;
+                    const rates = computeRates(client.clientId, userData);
+                    if (rates) metaHtml += `<span class="traffic-badge speed-badge${rates.active ? ' speed-active' : ''}">↓${formatBytes(Math.round(rates.rx))}/s ↑${formatBytes(Math.round(rates.tx))}/s</span>`;
+                    if (isOnline) client._online = true;
                 }
 
                 if (!enabled) metaHtml += `<span class="badge badge-danger" style="font-size:0.65rem">${_('stop')}</span>`;
@@ -2332,7 +2338,10 @@
     function startRenameConnection(clientId, btn) {
         const item = btn.closest('.client-item');
         const nameEl = item.querySelector('.client-name');
-        const oldName = nameEl.textContent;
+        // .client-name also contains the .client-ip span; take only the name text
+        const clone = nameEl.cloneNode(true);
+        clone.querySelectorAll('.client-ip').forEach(el => el.remove());
+        const oldName = clone.textContent.trim();
         nameEl.innerHTML = `
             <span class="rename-editor" style="display:inline-flex;gap:4px;align-items:center;">
                 <input type="text" class="form-input" style="padding:2px 8px;font-size:0.85rem;width:160px;height:auto;" value="${escapeHtml(oldName)}">
