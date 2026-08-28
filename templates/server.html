@@ -2223,7 +2223,8 @@
                             .replace('{time}', timeStr)
                             .replace('{count}', ev.count);
                         return `<div class="conn-warning">${escapeHtml(text)}</div>`;
-                    }).join('') + '</div>';
+                    }).join('') +
+                    `<button class="btn btn-secondary btn-sm btn-icon conn-warning-clear" onclick="clearConnWarnings('${escapeJs(client.clientId)}')" title="${_('clear_warnings')}" style="margin-top:4px;">🗑</button></div>`;
                 }
 
                 if (proto === 'telemt') {
@@ -2396,6 +2397,20 @@
                 protocol: proto, client_id: clientId,
             });
             showToast(_('connection_deleted'), 'success');
+            loadConnections();
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        }
+    }
+
+    // Clear connection-flood (torrent) warnings history for a peer
+    async function clearConnWarnings(clientId) {
+        const proto = document.getElementById('connProtoSelect').value;
+        try {
+            await apiCall(`/api/servers/${SERVER_ID}/connections/clear_warnings`, 'POST', {
+                protocol: proto, client_id: clientId,
+            });
+            showToast(_('warnings_cleared'), 'success');
             loadConnections();
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');

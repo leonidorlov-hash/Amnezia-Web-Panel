@@ -1615,6 +1615,25 @@ tail -f /dev/null
                 logger.warning(f'failed to save conn warnings: {e}')
         return warnings
 
+    def clear_conn_warnings(self, protocol_type, client_id):
+        """Clear all recorded connection-flood warnings for one peer."""
+        clients_table = self._get_clients_table(protocol_type)
+        client = next((c for c in clients_table if c.get('clientId') == client_id), None)
+        ip = None
+        if client:
+            ud = client.get('userData', {}) or {}
+            ip = ud.get('clientIp')
+            if not ip:
+                m = re.search(r'(\d+\.\d+\.\d+\.\d+)', ud.get('allowedIps', '') or '')
+                ip = m.group(1) if m else None
+        if not ip:
+            raise RuntimeError('Client IP not found')
+        warnings = self._load_conn_warnings(protocol_type)
+        if ip in warnings:
+            warnings.pop(ip, None)
+            self._save_conn_warnings(protocol_type, warnings)
+        return {'status': 'success', 'cleared_ip': ip}
+
     def _wg_show(self, protocol_type):
         """Run 'wg show all' and parse output."""
         container_name = self._container_name(protocol_type)

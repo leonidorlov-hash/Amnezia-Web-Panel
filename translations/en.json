@@ -440,5 +440,7 @@
   "conn_warning_text": "⚠️ Warning: {count} connections opened at {time} on {date}!",
   "port_in_use_by": "Port {port} is already used by {owner}. Choose another port.",
   "host_tuning": "Host tuning",
-  "max_speed": "Max speed (Mbps)"
+  "max_speed": "Max speed (Mbps)",
+  "clear_warnings": "Clear warnings",
+  "warnings_cleared": "Warnings cleared"
 }

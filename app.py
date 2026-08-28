@@ -3324,6 +3324,27 @@ async def api_edit_connection(request: Request, server_id: int, req: EditConnect
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
+@app.post('/api/servers/{server_id}/connections/clear_warnings', tags=["Connections"])
+async def api_clear_conn_warnings(request: Request, server_id: int, req: ConnectionActionRequest):
+    """Clear recorded connection-flood (torrent) warnings for one peer."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        ssh = get_ssh(server)
+        ssh.connect()
+        manager = get_protocol_manager(ssh, req.protocol)
+        result = _manager_call(manager, 'clear_conn_warnings', req.protocol, req.client_id) or {}
+        ssh.disconnect()
+        return result
+    except Exception as e:
+        logger.exception("Error clearing connection warnings")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
 @app.post('/api/servers/{server_id}/connections/rename', tags=["Connections"])
 async def api_rename_connection(request: Request, server_id: int, req: RenameConnectionRequest):
     if not _check_admin(request):
