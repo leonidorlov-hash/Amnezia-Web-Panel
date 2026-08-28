@@ -439,5 +439,6 @@
   "traffic_reset_success": "Трафик сброшен",
   "conn_warning_text": "⚠️ Внимание: {date} в {time} открыто {count} соединений!",
   "port_in_use_by": "Порт {port} уже занят ({owner}). Выберите другой порт.",
-  "host_tuning": "Конфигурация"
+  "host_tuning": "Конфигурация",
+  "max_speed": "Макс. скорость (Мбит/с)"
 }

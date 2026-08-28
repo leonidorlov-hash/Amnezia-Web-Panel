@@ -965,6 +965,13 @@ if [ -n "$SUBNET6" ] && command -v ip6tables >/dev/null 2>&1; then
   ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth1 -j MASQUERADE
 fi
 
+# Apply per-peer bandwidth limits (flat file written by the panel)
+if [ -f /opt/amnezia/awg/bwlimits ]; then
+(
+{self._tc_apply_body('/opt/amnezia/awg/bwlimits', config_path)}
+)
+fi
+
 tail -f /dev/null
 """
 
@@ -1030,6 +1037,106 @@ tail -f /dev/null
             f"docker cp /tmp/_amnz_clients.json {container_name}:{clients_table_path}"
         )
         self.ssh.run_command("rm -f /tmp/_amnz_clients.json")
+
+        # Keep per-peer bandwidth limits in sync (best effort)
+        try:
+            self._apply_bw_limits(protocol_type, clients_table)
+        except Exception as err:
+            logger.warning(f"apply bw limits warning: {err}")
+
+    def _bwlimits_path(self):
+        """Flat file with per-peer speed limits, next to clientsTable."""
+        return '/opt/amnezia/awg/bwlimits'
+
+    @staticmethod
+    def _tc_apply_body(bw_path, config_path):
+        """Shell snippet applying per-peer limits from a flat file via tc.
+
+        File format (space separated): "<ipv4> <ipv6|-> <mbps>".
+        Rebuilds qdiscs from scratch; unclassified traffic is unlimited.
+        Limits both download (HTB class on egress) and upload (ingress policer).
+        """
+        return f"""
+BW={bw_path}
+IFACE=$(basename {config_path} .conf)
+[ -f "$BW" ] || exit 0
+command -v tc >/dev/null 2>&1 || exit 0
+ip link show dev $IFACE >/dev/null 2>&1 || exit 0
+tc qdisc del dev $IFACE root 2>/dev/null
+tc qdisc del dev $IFACE ingress 2>/dev/null
+tc qdisc add dev $IFACE root handle 1: htb default 0 2>/dev/null || exit 0
+tc qdisc add dev $IFACE handle ffff: ingress 2>/dev/null || true
+i=0
+while read -r ip4 ip6 mbps; do
+  [ -z "$ip4" ] && continue
+  [ -z "$mbps" ] && continue
+  kbit=$(echo "$mbps" | awk '{{printf "%d", $1*1000}}')
+  [ "$kbit" -gt 0 ] 2>/dev/null || continue
+  i=$((i+1))
+  cid=$((100+i))
+  tc class add dev $IFACE parent 1: classid 1:$cid htb rate ${{kbit}}kbit ceil ${{kbit}}kbit 2>/dev/null
+  tc filter add dev $IFACE parent 1: protocol ip u32 match ip dst $ip4/32 flowid 1:$cid 2>/dev/null
+  [ "$ip6" != "-" ] && [ -n "$ip6" ] && tc filter add dev $IFACE parent 1: protocol ipv6 u32 match ip6 dst $ip6/128 flowid 1:$cid 2>/dev/null
+  tc filter add dev $IFACE parent ffff: protocol ip u32 match ip src $ip4/32 police rate ${{kbit}}kbit burst 64k drop 2>/dev/null
+  [ "$ip6" != "-" ] && [ -n "$ip6" ] && tc filter add dev $IFACE parent ffff: protocol ipv6 u32 match ip6 src $ip6/128 police rate ${{kbit}}kbit burst 64k drop 2>/dev/null
+done < "$BW"
+"""
+
+    def _apply_bw_limits(self, protocol_type, clients_table):
+        """Write the flat bwlimits file into the container and apply via tc."""
+        container_name = self._container_name(protocol_type)
+        lines = []
+        for client in clients_table:
+            ud = client.get('userData', {}) or {}
+            try:
+                mbps = float(ud.get('maxSpeed') or 0)
+            except (TypeError, ValueError):
+                continue
+            if mbps <= 0:
+                continue
+            ip4 = ud.get('clientIp') or ''
+            ip6 = ud.get('clientIpv6') or '-'
+            if not ip4:
+                continue
+            lines.append(f"{ip4} {ip6} {mbps:g}")
+        content = "\n".join(lines) + ("\n" if lines else "")
+        self.ssh.upload_file(content, "/tmp/_amnz_bwlimits")
+        self.ssh.run_sudo_command(
+            f"docker cp /tmp/_amnz_bwlimits {container_name}:{self._bwlimits_path()}"
+        )
+        self.ssh.run_command("rm -f /tmp/_amnz_bwlimits")
+        if self.check_container_running(protocol_type):
+            body = self._tc_apply_body(self._bwlimits_path(), self._resolve_config_path(protocol_type))
+            self.ssh.upload_file(body, "/tmp/_amnz_tc.sh")
+            self.ssh.run_sudo_command(
+                f"docker cp /tmp/_amnz_tc.sh {container_name}:/tmp/_amnz_tc.sh && "
+                f"docker exec {container_name} bash /tmp/_amnz_tc.sh",
+                timeout=60
+            )
+            self.ssh.run_command("rm -f /tmp/_amnz_tc.sh")
+
+    def set_speed_limit(self, protocol_type, client_id, max_speed):
+        """Set per-peer bandwidth limit in Mbit/s (0 = unlimited).
+
+        Enforced via tc inside the container (HTB on egress + ingress
+        policer), per peer IPv4/IPv6. Persisted in clientsTable
+        (userData.maxSpeed) and re-applied at container start from the
+        bwlimits flat file.
+        """
+        mbps = round(float(max_speed), 1)
+        if mbps < 0:
+            raise RuntimeError('max_speed must be >= 0')
+        clients_table = self._get_clients_table(protocol_type)
+        client = next((c for c in clients_table if c.get('clientId') == client_id), None)
+        if client is None:
+            raise RuntimeError('Client not found')
+        ud = client.setdefault('userData', {})
+        if mbps == 0:
+            ud.pop('maxSpeed', None)
+        else:
+            ud['maxSpeed'] = mbps
+        self._save_clients_table(protocol_type, clients_table)
+        return {'status': 'success', 'max_speed': mbps}
 
     def _get_server_config(self, protocol_type):
         """Get the server WireGuard config."""
@@ -1119,6 +1226,13 @@ if [ -n "$SUBNET6" ] && command -v ip6tables >/dev/null 2>&1; then
   ip6tables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
   ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth0 -j MASQUERADE
   ip6tables -t nat -A POSTROUTING -s $SUBNET6 -o eth1 -j MASQUERADE
+fi
+
+# Apply per-peer bandwidth limits (flat file written by the panel)
+if [ -f /opt/amnezia/awg/bwlimits ]; then
+(
+{self._tc_apply_body('/opt/amnezia/awg/bwlimits', config_path)}
+)
 fi
 
 tail -f /dev/null

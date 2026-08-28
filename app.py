@@ -1530,6 +1530,7 @@ class RenameConnectionRequest(BaseModel):
     protocol: str = 'awg'
     client_id: str = ''
     new_name: str = ''
+    max_speed: float = -1  # Mbit/s; -1 = don't touch, 0 = unlimited
 
 class SaveConnectionConfigRequest(BaseModel):
     protocol: str = 'awg'
@@ -3341,6 +3342,14 @@ async def api_rename_connection(request: Request, server_id: int, req: RenameCon
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
         result = _manager_call(manager, 'rename_client', req.protocol, req.client_id, new_name) or {}
+        # Optional per-peer bandwidth limit (AWG managers only)
+        speed_warning = None
+        if req.max_speed >= 0 and hasattr(manager, 'set_speed_limit'):
+            try:
+                _manager_call(manager, 'set_speed_limit', req.protocol, req.client_id, req.max_speed)
+            except Exception as se:
+                logger.warning(f"set_speed_limit failed: {se}")
+                speed_warning = str(se)
         ssh.disconnect()
         # Telemt rename may also change client_id (username is the identity there)
         new_client_id = result.get('client_id', req.client_id)
@@ -3353,7 +3362,10 @@ async def api_rename_connection(request: Request, server_id: int, req: RenameCon
                 changed = True
         if changed:
             save_data(data)
-        return {'status': 'success', 'name': stored_name, 'client_id': new_client_id}
+        resp = {'status': 'success', 'name': stored_name, 'client_id': new_client_id}
+        if speed_warning:
+            resp['speed_warning'] = speed_warning
+        return resp
     except Exception as e:
         logger.exception("Error renaming connection")
         return JSONResponse({'error': str(e)}, status_code=500)

@@ -406,5 +406,6 @@
   "traffic_reset_success": "ترافیک بازنشانی شد",
   "conn_warning_text": "⚠️ هشدار: در {date} ساعت {time} تعداد {count} اتصال باز شد!",
   "port_in_use_by": "پورت {port} قبلاً توسط {owner} استفاده شده است. پورت دیگری انتخاب کنید.",
-  "host_tuning": "تنظیمات میزبان"
+  "host_tuning": "تنظیمات میزبان",
+  "max_speed": "حداکثر سرعت (Mbps)"
 }

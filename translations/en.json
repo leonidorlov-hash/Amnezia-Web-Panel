@@ -439,5 +439,6 @@
   "traffic_reset_success": "Traffic reset",
   "conn_warning_text": "⚠️ Warning: {count} connections opened at {time} on {date}!",
   "port_in_use_by": "Port {port} is already used by {owner}. Choose another port.",
-  "host_tuning": "Host tuning"
+  "host_tuning": "Host tuning",
+  "max_speed": "Max speed (Mbps)"
 }
