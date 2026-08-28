@@ -434,6 +434,25 @@ mkdir -p {dockerfile_folder}
 if ! docker network ls | grep -q amnezia-dns-net; then
   docker network create --driver bridge --subnet=172.29.172.0/24 --opt com.docker.network.bridge.name=amn0 amnezia-dns-net
 fi
+# Enable Docker IPv6 when the host has a global IPv6 address. Without this
+# containers get no IPv6 route and dual-stack tunnels silently fall back
+# to IPv4-only. daemon.json is merged (not overwritten) and backed up.
+if ip -6 -o addr show scope global 2>/dev/null | grep -q inet6; then
+  if ! grep -q '"ipv6"' /etc/docker/daemon.json 2>/dev/null; then
+    [ -f /etc/docker/daemon.json ] && cp /etc/docker/daemon.json /etc/docker/daemon.json.bak.awp
+    python3 - <<'PYEOF' 2>/dev/null || echo '{{"ipv6": true, "fixed-cidr-v6": "fd00:42::/64"}}' > /etc/docker/daemon.json
+import json, os
+p = '/etc/docker/daemon.json'
+d = {{}}
+if os.path.exists(p):
+    d = json.load(open(p))
+d['ipv6'] = True
+d.setdefault('fixed-cidr-v6', 'fd00:42::/64')
+json.dump(d, open(p, 'w'), indent=2)
+PYEOF
+    systemctl restart docker
+  fi
+fi
 """
         out, err, code = self.ssh.run_sudo_script(script)
         if code != 0:
