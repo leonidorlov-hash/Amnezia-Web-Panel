@@ -409,5 +409,6 @@
   "host_tuning": "تنظیمات میزبان",
   "max_speed": "حداکثر سرعت (Mbps)",
   "clear_warnings": "پاک کردن هشدارها",
-  "warnings_cleared": "هشدارها پاک شدند"
+  "warnings_cleared": "هشدارها پاک شدند",
+  "speed_limit_unlim": "محدودیت سرعت (0 = نامحدود)"
 }

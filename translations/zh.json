@@ -409,5 +409,6 @@
   "host_tuning": "主机调优",
   "max_speed": "最大速度 (Mbps)",
   "clear_warnings": "清除警告",
-  "warnings_cleared": "警告已清除"
+  "warnings_cleared": "警告已清除",
+  "speed_limit_unlim": "速度限制 (0 = 不限)"
 }

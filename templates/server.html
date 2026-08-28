@@ -2428,9 +2428,15 @@
         const isAwg = proto.startsWith('awg');
         const curSpeed = item.dataset.maxspeed || '0';
         nameEl.innerHTML = `
-            <span class="rename-editor" style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;">
-                <input type="text" class="form-input" style="padding:2px 8px;font-size:0.85rem;width:160px;height:auto;" value="${escapeHtml(oldName)}">
-                ${isAwg ? `<input type="number" class="form-input rename-speed" min="0" step="0.1" style="padding:2px 8px;font-size:0.85rem;width:110px;height:auto;" value="${curSpeed}" title="${_('max_speed')} (0 = ∞)" placeholder="∞">` : ''}
+            <span class="rename-editor" style="display:inline-flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+                <label style="display:flex;flex-direction:column;gap:2px;font-size:0.7rem;opacity:.7;">
+                    ${_('name')}
+                    <input type="text" class="form-input" style="padding:2px 8px;font-size:0.85rem;width:160px;height:auto;" value="${escapeHtml(oldName)}">
+                </label>
+                ${isAwg ? `<label style="display:flex;flex-direction:column;gap:2px;font-size:0.7rem;opacity:.7;">
+                    ${_('speed_limit_unlim')}
+                    <input type="number" class="form-input rename-speed" min="0" step="0.1" style="padding:2px 8px;font-size:0.85rem;width:110px;height:auto;" value="${curSpeed}" placeholder="∞">
+                </label>` : ''}
                 <button class="btn btn-secondary btn-sm btn-icon" title="${_('save')}">✔</button>
                 <button class="btn btn-secondary btn-sm btn-icon rename-cancel" title="${_('cancel')}">✖</button>
             </span>

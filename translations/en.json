@@ -442,5 +442,6 @@
   "host_tuning": "Host tuning",
   "max_speed": "Max speed (Mbps)",
   "clear_warnings": "Clear warnings",
-  "warnings_cleared": "Warnings cleared"
+  "warnings_cleared": "Warnings cleared",
+  "speed_limit_unlim": "Speed limit (0 = unlim.)"
 }

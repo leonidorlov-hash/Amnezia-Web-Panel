@@ -409,5 +409,6 @@
   "host_tuning": "Réglages hôte",
   "max_speed": "Vitesse max (Mbps)",
   "clear_warnings": "Effacer les alertes",
-  "warnings_cleared": "Alertes effacées"
+  "warnings_cleared": "Alertes effacées",
+  "speed_limit_unlim": "Limite de vitesse (0 = illimité)"
 }
