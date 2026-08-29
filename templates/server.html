@@ -2218,7 +2218,7 @@
 
                 // Per-peer bandwidth limit badge (AWG): ∞ by default, ⚡X Mbps when set
                 const maxSpeed = parseFloat(userData.maxSpeed || 0) || 0;
-                if (proto.startsWith('awg')) metaHtml += `<span class="traffic-badge" title="${_('max_speed')}">⚡${maxSpeed > 0 ? maxSpeed + ' Mbps' : '∞'}</span>`;
+                if (proto.startsWith('awg')) metaHtml += `<span class="traffic-badge" title="${_('max_speed')}">⚡${maxSpeed > 0 ? maxSpeed + ' Mbps' : '<span style="font-size:1.25em; line-height:0;">∞</span>'}</span>`;
 
                 // Connection flood warnings (P2P/torrent detection), newest last
                 let warningsHtml = '';
