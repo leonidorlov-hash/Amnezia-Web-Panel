@@ -194,12 +194,21 @@
             }
         }
 
-        /* Close modal on backdrop click */
+        /* Close modal on backdrop click — but only when BOTH the press and
+           the release happen on the backdrop. Pressing inside the modal
+           (e.g. selecting input text) and releasing outside must not close
+           it, otherwise drag-select closes every modal. */
+        let backdropPressTarget = null;
+        document.addEventListener('mousedown', (e) => {
+            backdropPressTarget = e.target;
+        });
         document.addEventListener('click', (e) => {
-            if (e.target.classList.contains('modal-backdrop') && e.target.classList.contains('active')) {
+            if (e.target.classList.contains('modal-backdrop') && e.target.classList.contains('active')
+                && backdropPressTarget === e.target) {
                 e.target.classList.remove('active');
                 document.body.style.overflow = '';
             }
+            backdropPressTarget = null;
         });
 
         /* Close modal on Escape */
