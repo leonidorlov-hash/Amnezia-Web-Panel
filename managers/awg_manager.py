@@ -730,6 +730,17 @@ done
 
         # Step 5: Run container
         results.append("Starting container...")
+        # Detect host IPv6 BEFORE creating the container: the netns
+        # disable_ipv6 flags are fixed at container creation time, so a
+        # container started without these sysctls can never add an IPv6
+        # address to a tunnel interface (ip -6 address add -> RTNETLINK
+        # Permission denied, and awg-quick then deletes the whole awg0).
+        ipv6_enabled = self._detect_server_ipv6()
+        ipv6_sysctls = (
+            '--sysctl="net.ipv6.conf.all.disable_ipv6=0" \\\n'
+            '--sysctl="net.ipv6.conf.default.disable_ipv6=0" \\\n'
+            if ipv6_enabled else ''
+        )
         run_cmd = f"""docker run -d \
 --restart always \
 --privileged \
@@ -738,7 +749,7 @@ done
 -p {port}:{port}/udp \
 -v /lib/modules:/lib/modules \
 --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
---ulimit nofile=51200:51200 \
+{ipv6_sysctls}--ulimit nofile=51200:51200 \
 --name {container_name} \
 {container_name}"""
 
@@ -756,7 +767,6 @@ done
 
         # Step 6: Configure container (generate server keys and config)
         results.append("Configuring AWG...")
-        ipv6_enabled = self._detect_server_ipv6()
         results.append(
             "IPv6 detected on host, enabling dual-stack tunnel"
             if ipv6_enabled else
