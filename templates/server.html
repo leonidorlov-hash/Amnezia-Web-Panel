@@ -73,6 +73,12 @@
     .protocol-card.installed-app-visible {
         display: block !important;
     }
+    /* While the status check runs, hide every protocol tile so the grid
+       does not flash the full marketplace list before real data arrives */
+    .protocol-cards.apps-pending .protocol-card,
+    .protocol-cards.apps-pending .promo-block {
+        display: none !important;
+    }
     .apps-loading {
         margin-bottom: var(--space-xl);
         min-height: 140px;
@@ -174,7 +180,7 @@
     </button>
 </div>
 
-<div class="protocol-cards" id="protocols-grid">
+<div class="protocol-cards apps-pending" id="protocols-grid">
     <!-- AWG3 Card (first - newest version).
          Installed-protocol tiles are static cards toggled by
          applyInstalledAppsVisibility(); a protocol without one is shown in the
@@ -1203,8 +1209,10 @@
         installedAppsLoading = !!isLoading;
         const loading = document.getElementById('installedAppsLoading');
         const empty = document.getElementById('installedAppsEmpty');
+        const grid = document.getElementById('protocols-grid');
         if (loading) loading.classList.toggle('hidden', !installedAppsLoading);
         if (empty && installedAppsLoading) empty.classList.add('hidden');
+        if (grid) grid.classList.toggle('apps-pending', installedAppsLoading);
     }
 
     function applyInstalledAppsVisibility() {
@@ -1265,6 +1273,7 @@
         if (empty) empty.classList.toggle('hidden', installedAppsLoading || installedCount > 0);
         const loading = document.getElementById('installedAppsLoading');
         if (loading) loading.classList.toggle('hidden', !installedAppsLoading);
+        if (grid) grid.classList.toggle('apps-pending', installedAppsLoading);
     }
 
     function getProtoTitle(proto) {
