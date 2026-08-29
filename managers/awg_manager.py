@@ -436,22 +436,29 @@ if ! docker network ls | grep -q amnezia-dns-net; then
 fi
 # Enable Docker IPv6 when the host has a global IPv6 address. Without this
 # containers get no IPv6 route and dual-stack tunnels silently fall back
-# to IPv4-only. daemon.json is merged (not overwritten) and backed up.
+# to IPv4-only. Also enable ip6tables (+experimental): without them Docker
+# sets no NAT66 for the fixed-cidr-v6 ULA subnet and v6 traffic blackholes.
+# daemon.json is merged (not overwritten), backed up, docker restarted
+# only when the file actually changed.
 if ip -6 -o addr show scope global 2>/dev/null | grep -q inet6; then
-  if ! grep -q '"ipv6"' /etc/docker/daemon.json 2>/dev/null; then
-    [ -f /etc/docker/daemon.json ] && cp /etc/docker/daemon.json /etc/docker/daemon.json.bak.awp
-    python3 - <<'PYEOF' 2>/dev/null || echo '{{"ipv6": true, "fixed-cidr-v6": "fd00:42::/64"}}' > /etc/docker/daemon.json
-import json, os
+  cp /etc/docker/daemon.json /etc/docker/daemon.json.bak.awp 2>/dev/null
+  python3 - <<'PYEOF' 2>/dev/null || (grep -q '"ipv6"' /etc/docker/daemon.json 2>/dev/null || (echo '{{"ipv6": true, "fixed-cidr-v6": "fd00:42::/64", "experimental": true, "ip6tables": true}}' > /etc/docker/daemon.json && systemctl restart docker))
+import json, os, subprocess
 p = '/etc/docker/daemon.json'
 d = {{}}
 if os.path.exists(p):
     d = json.load(open(p))
-d['ipv6'] = True
-d.setdefault('fixed-cidr-v6', 'fd00:42::/64')
-json.dump(d, open(p, 'w'), indent=2)
+need = {{'ipv6': True, 'experimental': True, 'ip6tables': True}}
+changed = False
+for k, v in need.items():
+    if d.get(k) != v:
+        d[k] = v; changed = True
+if 'fixed-cidr-v6' not in d:
+    d['fixed-cidr-v6'] = 'fd00:42::/64'; changed = True
+if changed:
+    json.dump(d, open(p, 'w'), indent=2)
+    subprocess.run(['systemctl', 'restart', 'docker'], check=False)
 PYEOF
-    systemctl restart docker
-  fi
 fi
 """
         out, err, code = self.ssh.run_sudo_script(script)
