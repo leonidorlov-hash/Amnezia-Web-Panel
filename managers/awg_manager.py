@@ -1515,12 +1515,15 @@ tail -f /dev/null
         except Exception as e:
             logger.warning(f'get_clients: failed to parse conf peers: {e}')
 
-        # Connection flood monitoring: count conntrack entries per peer IP
-        # and attach recent warnings (P2P/torrent detection).
+        # Connection flood monitoring: attach the latest snapshot written by
+        # the background collector (collect_conn_stats). Only if the snapshot
+        # does not exist yet (fresh install / right after upgrade) fall back
+        # to a one-off live count so the UI is not empty for the first minute.
         try:
-            conn_counts = self._count_connections_by_ip(protocol_type)
-            conn_warnings = (self._update_conn_warnings(protocol_type, conn_counts)
-                             if conn_counts else self._load_conn_warnings(protocol_type))
+            conn_counts = self._load_conn_counts(protocol_type)
+            if not conn_counts:
+                conn_counts = self._count_connections_by_ip(protocol_type)
+            conn_warnings = self._load_conn_warnings(protocol_type)
             for client in clients_table:
                 user_data = client.get('userData', {})
                 ip = user_data.get('clientIp', '')
@@ -1559,10 +1562,11 @@ tail -f /dev/null
     def _count_connections_by_ip(self, protocol_type):
         """Count conntrack entries per peer IP.
 
-        Reads /proc/net/nf_conntrack INSIDE the instance container (NAT for
-        the VPN subnet happens in the container's netns, so the host table
-        only shows the container's own IP) and counts entries whose ORIGINAL
-        source IP belongs to the instance subnet.
+        Aggregates /proc/net/nf_conntrack INSIDE the instance container
+        (NAT for the VPN subnet happens in the container's netns, so the
+        host table only shows the container's own IP) and transfers only
+        the compact "count ip" summary instead of the multi-megabyte raw
+        table.
         Returns {ip: count}; empty dict if conntrack is unavailable.
         """
         try:
@@ -1572,26 +1576,72 @@ tail -f /dev/null
         except Exception:
             return {}
 
+        container = self._container_name(protocol_type)
+        awk_prog = ("awk '{for(i=1;i<=NF;i++) if($i~/^src=/){sub(/^src=/,\"\",$i); "
+                    "print $i; break}}' /proc/net/nf_conntrack 2>/dev/null | sort | uniq -c")
         out, err, code = self.ssh.run_sudo_command(
-            f"docker exec -i {self._container_name(protocol_type)} "
-            "sh -c 'head -c 8000000 /proc/net/nf_conntrack 2>/dev/null'"
+            f'docker exec -i {container} sh -c "{awk_prog}"'
         )
         if code != 0 or not out.strip():
             return {}
 
         counts = {}
         for line in out.split('\n'):
-            # First src= on the line is the original (initiator) tuple
-            m = re.search(r'\bsrc=(\d+\.\d+\.\d+\.\d+)', line)
-            if not m:
+            parts = line.split()
+            if len(parts) != 2:
                 continue
-            ip = m.group(1)
+            cnt_s, ip = parts
             try:
                 if ipaddress.ip_address(ip) in network:
-                    counts[ip] = counts.get(ip, 0) + 1
+                    counts[ip] = int(cnt_s)
             except ValueError:
                 continue
         return counts
+
+    def _conn_counts_path(self):
+        """Path inside container with the latest per-IP connection counts."""
+        return '/opt/amnezia/awg/conn_counts.json'
+
+    def _load_conn_counts(self, protocol_type):
+        """Load latest {ip: count} snapshot written by the collector."""
+        container_name = self._container_name(protocol_type)
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} cat {self._conn_counts_path()} 2>/dev/null"
+        )
+        if code != 0 or not out.strip():
+            return {}
+        try:
+            data = json.loads(out)
+            return {k: int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return {}
+
+    def _save_conn_counts(self, protocol_type, counts):
+        """Persist the {ip: count} snapshot into the container."""
+        container_name = self._container_name(protocol_type)
+        self.ssh.upload_file(json.dumps(counts), "/tmp/_amnz_conncount.json")
+        self.ssh.run_sudo_command(
+            f"docker cp /tmp/_amnz_conncount.json {container_name}:{self._conn_counts_path()}"
+        )
+        self.ssh.run_command("rm -f /tmp/_amnz_conncount.json")
+
+    def collect_conn_stats(self, protocol_type):
+        """Background collector: one cheap SSH roundtrip per instance.
+
+        Counts conntrack entries per peer IP inside the container (compact
+        awk summary, no raw table transfer), saves the snapshot and records
+        flood warnings. Called by the panel's background monitor so that
+        detection runs 24/7 even when nobody has the UI open.
+        """
+        counts = self._count_connections_by_ip(protocol_type)
+        if not counts:
+            return False
+        try:
+            self._save_conn_counts(protocol_type, counts)
+        except Exception as e:
+            logger.warning(f'failed to save conn counts: {e}')
+        self._update_conn_warnings(protocol_type, counts)
+        return True
 
     def _load_conn_warnings(self, protocol_type):
         """Load recorded warnings {ip: [{ts, count}, ...]} from the container."""
