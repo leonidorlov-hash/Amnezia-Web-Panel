@@ -1588,7 +1588,8 @@ tail -f /dev/null
             subnet_ip = self._get_subnet_ip(protocol_type)
             cidr = int(self._get_subnet_cidr(protocol_type))
             network = ipaddress.ip_network(f'{subnet_ip}/{cidr}', strict=False)
-        except Exception:
+        except Exception as e:
+            logger.info(f"conn monitor dbg {self.ssh.host} {protocol_type}: subnet failed: {e}")
             return {}
 
         container = self._container_name(protocol_type)
@@ -1600,6 +1601,8 @@ tail -f /dev/null
         out, err, code = self.ssh.run_sudo_command(
             f'docker exec -i {container} sh -c "{awk_prog}"'
         )
+        logger.info(f"conn monitor dbg {self.ssh.host} {protocol_type}: "
+                    f"code={code} out={out[:150]!r} err={err[:80]!r}")
         if code != 0 or not out.strip():
             return {}
 
