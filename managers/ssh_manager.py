@@ -6,6 +6,7 @@ Replicates the ServerController logic from the AmneziaVPN client.
 import paramiko
 import io
 import time
+import threading
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,45 +23,63 @@ class SSHManager:
         self.private_key = private_key
         self.client = None
         self._is_root = (username == 'root')
+        # Serializes connect/disconnect so concurrent threads (UI request
+        # handler + background monitor) cannot race a half-built transport.
+        self._conn_lock = threading.Lock()
 
     def connect(self):
         """Establish SSH connection to the server."""
-        self.disconnect()
-        self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        with self._conn_lock:
+            self._disconnect_locked()
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        kwargs = {
-            'hostname': self.host,
-            'port': self.port,
-            'username': self.username,
-            'timeout': 15,
-            'allow_agent': False,
-            'look_for_keys': False,
-        }
+            kwargs = {
+                'hostname': self.host,
+                'port': self.port,
+                'username': self.username,
+                'timeout': 15,
+                'allow_agent': False,
+                'look_for_keys': False,
+            }
 
-        if self.private_key:
-            key_file = io.StringIO(self.private_key)
-            try:
-                pkey = paramiko.RSAKey.from_private_key(key_file)
-            except paramiko.ssh_exception.SSHException:
-                key_file.seek(0)
+            if self.private_key:
+                key_file = io.StringIO(self.private_key)
                 try:
-                    pkey = paramiko.Ed25519Key.from_private_key(key_file)
+                    pkey = paramiko.RSAKey.from_private_key(key_file)
                 except paramiko.ssh_exception.SSHException:
                     key_file.seek(0)
-                    pkey = paramiko.ECDSAKey.from_private_key(key_file)
-            kwargs['pkey'] = pkey
-        elif self.password:
-            kwargs['password'] = self.password
+                    try:
+                        pkey = paramiko.Ed25519Key.from_private_key(key_file)
+                    except paramiko.ssh_exception.SSHException:
+                        key_file.seek(0)
+                        pkey = paramiko.ECDSAKey.from_private_key(key_file)
+                kwargs['pkey'] = pkey
+            elif self.password:
+                kwargs['password'] = self.password
 
-        self.client.connect(**kwargs)
+            self.client.connect(**kwargs)
+            # Keep NAT/stateful firewalls from silently dropping the idle
+            # long-lived transport between command bursts.
+            try:
+                self.client.get_transport().set_keepalive(30)
+            except Exception:
+                pass
         return True
+
+    def _disconnect_locked(self):
+        """Close SSH connection (caller must hold _conn_lock)."""
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
 
     def disconnect(self):
         """Close SSH connection."""
-        if self.client:
-            self.client.close()
-            self.client = None
+        with self._conn_lock:
+            self._disconnect_locked()
 
     def ensure_connected(self):
         """Connect only if there is no live transport.
@@ -79,17 +98,31 @@ class SSHManager:
         self.connect()
         return True
 
-    def run_command(self, command, timeout=60):
+    def run_command(self, command, timeout=60, _retried=False):
         """Execute command on remote server."""
         self.ensure_connected()
 
         logger.info(f"Running command: {command[:100]}...")
-        stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        
+        try:
+            stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
+        except Exception as e:
+            # Transport can be dead while is_active() still claims otherwise
+            # (silent NAT drop). Reconnect once and retry before giving up.
+            if not _retried:
+                logger.warning(f"exec failed ({e}); reconnecting and retrying once")
+                try:
+                    self.connect()
+                except Exception as ce:
+                    logger.error(f"reconnect failed: {ce}")
+                    return "", str(ce), -1
+                return self.run_command(command, timeout=timeout, _retried=True)
+            logger.error(f"exec failed after retry: {e}")
+            return "", str(e), -1
+
         # Crucial: set timeout on the channel to prevent hanging indefinitely
         stdout.channel.settimeout(timeout)
         stderr.channel.settimeout(timeout)
-        
+
         try:
             exit_code = stdout.channel.recv_exit_status()
             out = stdout.read().decode('utf-8', errors='replace').strip()
