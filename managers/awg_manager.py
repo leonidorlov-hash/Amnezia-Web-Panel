@@ -74,7 +74,7 @@ AWG3_CONFIG_KEYS = tuple(config_key for _, config_key in AWG3_PARAM_MAP)
 AWG3_MIN_JUNK_SIZE = 12
 
 # Connection flood monitoring (P2P/torrent detection)
-CONN_WARN_THRESHOLD = 200    # simultaneous connections per peer that trigger a warning (temporarily lowered for testing)
+CONN_WARN_THRESHOLD = 600    # simultaneous connections per peer that trigger a warning
 CONN_WARN_COOLDOWN = 3600    # min seconds between two recorded warnings for the same peer
 CONN_WARN_MAX_EVENTS = 5     # how many recent warnings are kept per peer
 
