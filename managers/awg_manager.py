@@ -1592,8 +1592,11 @@ tail -f /dev/null
             return {}
 
         container = self._container_name(protocol_type)
-        awk_prog = ("awk '{for(i=1;i<=NF;i++) if($i~/^src=/){sub(/^src=/,\"\",$i); "
-                    "print $i; break}}' /proc/net/nf_conntrack 2>/dev/null | sort | uniq -c")
+        # NOTE: \$ escaping is required — the command travels through the
+        # remote shell inside sh -c "...", where an unescaped $i would be
+        # expanded to an empty string before awk ever sees it.
+        awk_prog = ("awk '{for(i=1;i<=NF;i++) if(\\$i~/^src=/){sub(/^src=/,\"\",\\$i); "
+                    "print \\$i; break}}' /proc/net/nf_conntrack 2>/dev/null | sort | uniq -c")
         out, err, code = self.ssh.run_sudo_command(
             f'docker exec -i {container} sh -c "{awk_prog}"'
         )
