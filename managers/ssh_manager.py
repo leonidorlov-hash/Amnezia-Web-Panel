@@ -31,6 +31,10 @@ class SSHManager:
         # exhaust the web worker pool when several servers are down).
         self._last_connect_fail = 0.0
         self._connect_cooldown = 30.0
+        # Pooled managers (shared via app.get_ssh) must ignore the legacy
+        # per-request disconnect() calls scattered across endpoints —
+        # otherwise every API request kills the shared transport.
+        self.pooled = False
 
     def connect(self):
         """Establish SSH connection to the server."""
@@ -83,7 +87,19 @@ class SSHManager:
             self.client = None
 
     def disconnect(self):
-        """Close SSH connection."""
+        """Close SSH connection.
+
+        No-op for pooled managers: legacy endpoints call disconnect() in
+        finally-blocks after every request, which would destroy the shared
+        long-lived transport. Use force_disconnect() to really close it.
+        """
+        if self.pooled:
+            return
+        with self._conn_lock:
+            self._disconnect_locked()
+
+    def force_disconnect(self):
+        """Unconditionally close SSH connection (pool eviction etc.)."""
         with self._conn_lock:
             self._disconnect_locked()
 
