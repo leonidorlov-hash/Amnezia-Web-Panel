@@ -210,14 +210,28 @@ async def save_data_async(data):
         await asyncio.to_thread(save_data, data)
 
 
+# Long-lived SSH connections, keyed by (host, port, username). Each command
+# becomes a cheap channel on an existing transport instead of a full TCP+SSH
+# handshake per API call — the main fix for UI timeouts on distant servers.
+_SSH_POOL = {}
+_SSH_POOL_LOCK = threading.Lock()
+
+
 def get_ssh(server):
-    return SSHManager(
-        host=server['host'],
-        port=server.get('ssh_port', 22),
-        username=server['username'],
-        password=server.get('password'),
-        private_key=server.get('private_key'),
-    )
+    key = (server['host'], int(server.get('ssh_port', 22)), server['username'])
+    with _SSH_POOL_LOCK:
+        ssh = _SSH_POOL.get(key)
+        if ssh is None:
+            ssh = SSHManager(
+                host=server['host'],
+                port=server.get('ssh_port', 22),
+                username=server['username'],
+                password=server.get('password'),
+                private_key=server.get('private_key'),
+            )
+            _SSH_POOL[key] = ssh
+    ssh.ensure_connected()
+    return ssh
 
 
 def get_panel_local_url(request: Optional[Request] = None):

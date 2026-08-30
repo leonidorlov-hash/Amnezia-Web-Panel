@@ -205,6 +205,12 @@ class AWGManager:
 
     def __init__(self, ssh_manager):
         self.ssh = ssh_manager
+        # Short-lived caches: a single UI refresh asks for the same config
+        # path/content several times; each call is a separate SSH command.
+        # 10s TTL keeps edits visible while collapsing duplicates.
+        self._config_path_cache = {}   # protocol_type -> (ts, path)
+        self._server_config_cache = {} # protocol_type -> (ts, content)
+        self._CACHE_TTL = 10
 
     def _base_protocol(self, protocol_type):
         """Return base protocol for instance keys like awg__2."""
@@ -256,15 +262,18 @@ class AWGManager:
         instead of requiring users to create symlinks inside the container.
         """
         container_name = self._container_name(protocol_type)
+        cached = self._config_path_cache.get(protocol_type)
+        if cached and time.time() - cached[0] < self._CACHE_TTL:
+            return cached[1]
         candidates = self._config_path_candidates(protocol_type)
         paths = ' '.join(candidates)
         script = f'for p in {paths}; do if [ -f "$p" ]; then echo "$p"; exit 0; fi; done; exit 1'
         out, _, code = self.ssh.run_sudo_command(
             f"docker exec -i {container_name} sh -c '{script}'"
         )
-        if code == 0 and out.strip():
-            return out.strip().splitlines()[0]
-        return self._config_path(protocol_type)
+        result = out.strip().splitlines()[0] if code == 0 and out.strip() else self._config_path(protocol_type)
+        self._config_path_cache[protocol_type] = (time.time(), result)
+        return result
 
     def _wg_binary(self, protocol_type):
         """Get the wireguard binary name."""
@@ -1166,6 +1175,9 @@ done < "$BW"
 
     def _get_server_config(self, protocol_type):
         """Get the server WireGuard config."""
+        cached = self._server_config_cache.get(protocol_type)
+        if cached and time.time() - cached[0] < self._CACHE_TTL:
+            return cached[1]
         container_name = self._container_name(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
 
@@ -1174,6 +1186,7 @@ done < "$BW"
         )
         if code != 0:
             raise RuntimeError(f"Failed to get server config: {err}")
+        self._server_config_cache[protocol_type] = (time.time(), out)
         return out
 
     @staticmethod
@@ -1195,6 +1208,8 @@ done < "$BW"
     def save_server_config(self, protocol_type, config_content):
         """Save the server WireGuard config and restart container."""
         config_content = self._sanitize_server_config(config_content)
+        self._server_config_cache.pop(protocol_type, None)
+        self._config_path_cache.pop(protocol_type, None)
         container_name = self._container_name(protocol_type)
         config_path = self._resolve_config_path(protocol_type)
 

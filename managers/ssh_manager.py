@@ -25,6 +25,7 @@ class SSHManager:
 
     def connect(self):
         """Establish SSH connection to the server."""
+        self.disconnect()
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -61,10 +62,26 @@ class SSHManager:
             self.client.close()
             self.client = None
 
+    def ensure_connected(self):
+        """Connect only if there is no live transport.
+
+        Lets the panel keep one long-lived connection per server and run
+        commands as cheap channels on it instead of paying a full TCP+SSH
+        handshake for every API request (a major source of UI timeouts on
+        high-latency servers).
+        """
+        try:
+            transport = self.client.get_transport() if self.client else None
+            if transport and transport.is_active():
+                return True
+        except Exception:
+            pass
+        self.connect()
+        return True
+
     def run_command(self, command, timeout=60):
         """Execute command on remote server."""
-        if not self.client:
-            raise ConnectionError("Not connected to server")
+        self.ensure_connected()
 
         logger.info(f"Running command: {command[:100]}...")
         stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
