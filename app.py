@@ -1681,7 +1681,7 @@ class TunnelStartRequest(BaseModel):
 # Each round is one cheap SSH roundtrip per AWG instance (a compact per-IP
 # conntrack summary), so detection works 24/7 without anyone watching the UI
 # and the 6s UI refresh only reads the small snapshot files.
-CONN_MONITOR_INTERVAL = 60
+CONN_MONITOR_INTERVAL = 600
 
 
 def _conn_monitor_loop():
