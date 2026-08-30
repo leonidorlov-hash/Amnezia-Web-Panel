@@ -40,42 +40,62 @@ class SSHManager:
         """Establish SSH connection to the server."""
         with self._conn_lock:
             self._disconnect_locked()
-            self.client = paramiko.SSHClient()
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-            kwargs = {
-                'hostname': self.host,
-                'port': self.port,
-                'username': self.username,
-                'timeout': 15,
-                'allow_agent': False,
-                'look_for_keys': False,
-            }
-
-            if self.private_key:
-                key_file = io.StringIO(self.private_key)
+            # One retry on TCP connect timeout: links with random SYN loss
+            # (e.g. transcontinental/DPI-filtered routes) drop ~half of the
+            # first attempts while the retry succeeds in milliseconds.
+            last_exc = None
+            for attempt in (1, 2):
                 try:
-                    pkey = paramiko.RSAKey.from_private_key(key_file)
-                except paramiko.ssh_exception.SSHException:
-                    key_file.seek(0)
-                    try:
-                        pkey = paramiko.Ed25519Key.from_private_key(key_file)
-                    except paramiko.ssh_exception.SSHException:
-                        key_file.seek(0)
-                        pkey = paramiko.ECDSAKey.from_private_key(key_file)
-                kwargs['pkey'] = pkey
-            elif self.password:
-                kwargs['password'] = self.password
-
-            self.client.connect(**kwargs)
-            # Keep NAT/stateful firewalls from silently dropping the idle
-            # long-lived transport between command bursts.
-            try:
-                self.client.get_transport().set_keepalive(30)
-            except Exception:
-                pass
+                    self._connect_once()
+                    last_exc = None
+                    break
+                except (TimeoutError, OSError) as e:
+                    last_exc = e
+                    logger.warning(
+                        f"SSH connect to {self.host} attempt {attempt} "
+                        f"failed: {e}")
+                    self._disconnect_locked()
+            if last_exc is not None:
+                raise last_exc
             self._last_connect_fail = 0.0
         return True
+
+    def _connect_once(self):
+        """Single TCP+SSH handshake attempt (caller holds _conn_lock)."""
+        self.client = paramiko.SSHClient()
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        kwargs = {
+            'hostname': self.host,
+            'port': self.port,
+            'username': self.username,
+            'timeout': 15,
+            'allow_agent': False,
+            'look_for_keys': False,
+        }
+
+        if self.private_key:
+            key_file = io.StringIO(self.private_key)
+            try:
+                pkey = paramiko.RSAKey.from_private_key(key_file)
+            except paramiko.ssh_exception.SSHException:
+                key_file.seek(0)
+                try:
+                    pkey = paramiko.Ed25519Key.from_private_key(key_file)
+                except paramiko.ssh_exception.SSHException:
+                    key_file.seek(0)
+                    pkey = paramiko.ECDSAKey.from_private_key(key_file)
+            kwargs['pkey'] = pkey
+        elif self.password:
+            kwargs['password'] = self.password
+
+        self.client.connect(**kwargs)
+        # Keep NAT/stateful firewalls from silently dropping the idle
+        # long-lived transport between command bursts.
+        try:
+            self.client.get_transport().set_keepalive(30)
+        except Exception:
+            pass
 
     def _disconnect_locked(self):
         """Close SSH connection (caller must hold _conn_lock)."""
