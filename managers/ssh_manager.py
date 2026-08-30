@@ -26,6 +26,11 @@ class SSHManager:
         # Serializes connect/disconnect so concurrent threads (UI request
         # handler + background monitor) cannot race a half-built transport.
         self._conn_lock = threading.Lock()
+        # Backoff: after a failed connect, do not hammer the dead server on
+        # every request (each attempt costs up to `timeout` seconds and can
+        # exhaust the web worker pool when several servers are down).
+        self._last_connect_fail = 0.0
+        self._connect_cooldown = 30.0
 
     def connect(self):
         """Establish SSH connection to the server."""
@@ -65,6 +70,7 @@ class SSHManager:
                 self.client.get_transport().set_keepalive(30)
             except Exception:
                 pass
+            self._last_connect_fail = 0.0
         return True
 
     def _disconnect_locked(self):
@@ -95,7 +101,17 @@ class SSHManager:
                 return True
         except Exception:
             pass
-        self.connect()
+        # Cooldown after a recent failed attempt: fail fast instead of
+        # blocking the worker on another 15s connect to a dead server.
+        if time.time() - self._last_connect_fail < self._connect_cooldown:
+            raise ConnectionError(
+                f"SSH to {self.host} recently failed, backing off "
+                f"{int(self._connect_cooldown)}s")
+        try:
+            self.connect()
+        except Exception:
+            self._last_connect_fail = time.time()
+            raise
         return True
 
     def run_command(self, command, timeout=60, _retried=False):
@@ -199,8 +215,7 @@ class SSHManager:
 
     def upload_file(self, content, remote_path):
         """Upload text content to a remote file via SFTP."""
-        if not self.client:
-            raise ConnectionError("Not connected to server")
+        self.ensure_connected()
 
         # Normalize line endings (Windows CRLF -> Unix LF)
         content = content.replace('\r\n', '\n')
@@ -218,8 +233,7 @@ class SSHManager:
         Uses SFTP to write to /tmp, then sudo mv to the target path.
         Also normalizes line endings to Unix-style (LF).
         """
-        if not self.client:
-            raise ConnectionError("Not connected to server")
+        self.ensure_connected()
 
         # Normalize line endings (Windows CRLF -> Unix LF)
         content = content.replace('\r\n', '\n')
@@ -236,8 +250,7 @@ class SSHManager:
 
     def download_file(self, remote_path):
         """Download text content from a remote file."""
-        if not self.client:
-            raise ConnectionError("Not connected to server")
+        self.ensure_connected()
 
         sftp = self.client.open_sftp()
         try:
@@ -248,8 +261,7 @@ class SSHManager:
 
     def file_exists(self, remote_path):
         """Check if a remote file exists."""
-        if not self.client:
-            raise ConnectionError("Not connected to server")
+        self.ensure_connected()
 
         sftp = self.client.open_sftp()
         try:
