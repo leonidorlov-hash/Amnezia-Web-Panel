@@ -234,6 +234,18 @@ def get_ssh(server):
     return ssh
 
 
+def drop_ssh(server):
+    """Remove a server's pooled connection (on edit/delete) and close it."""
+    key = (server['host'], int(server.get('ssh_port', 22)), server['username'])
+    with _SSH_POOL_LOCK:
+        ssh = _SSH_POOL.pop(key, None)
+    if ssh is not None:
+        try:
+            ssh.disconnect()
+        except Exception:
+            pass
+
+
 def get_panel_local_url(request: Optional[Request] = None):
     data = load_data()
     ssl_conf = data.get('settings', {}).get('ssl', {})
@@ -2302,6 +2314,8 @@ async def api_edit_server(request: Request, server_id: int, req: EditServerReque
         server['private_key'] = new_key
         server['server_info'] = server_info
         save_data(data)
+        # Drop the stale pooled connection: credentials/host may have changed.
+        drop_ssh(server)
         return {'status': 'success', 'server_info': server_info}
     except Exception as e:
         logger.exception("Error editing server")
@@ -2383,6 +2397,8 @@ async def api_delete_server(request: Request, server_id: int):
         data = load_data()
         if server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        drop_ssh(server)
         data['servers'].pop(server_id)
         # Clean up connections for this server
         data['user_connections'] = [c for c in data.get('user_connections', []) if c.get('server_id') != server_id]
