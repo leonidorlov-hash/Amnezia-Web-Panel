@@ -18,6 +18,7 @@
         <div class="card card-hover server-card" id="server-{{ loop.index0 }}" data-idx="{{ loop.index0 }}"
             data-name="{{ server.name }}" data-host="{{ server.host }}" data-port="{{ server.ssh_port }}"
             data-username="{{ server.username }}" data-auth="{{ 'key' if server.private_key else 'password' }}"
+            data-self-service="{{ 'true' if server.get('self_service_enabled') else 'false' }}"
             draggable="true">
             <div class="server-meta">
                 <div class="server-icon">🖥</div>
@@ -134,6 +135,14 @@
                         placeholder="{{ _('edit_keep_credential') }}"></textarea>
                     <div class="form-hint">{{ _('edit_keep_credential') }}</div>
                 </div>
+            </div>
+
+            <div class="form-group" style="margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border-color);">
+                <label class="form-label">
+                    <input type="checkbox" id="editServerSelfService">
+                    {{ _('server_self_service_enabled') }}
+                </label>
+                <div class="form-hint">{{ _('server_self_service_enabled_desc') }}</div>
             </div>
 
             <div class="modal-footer">
@@ -299,6 +308,9 @@
         const keyTab = tabsEl.children[1];
         switchEditAuthTab(authIsKey ? 'key' : 'password', authIsKey ? keyTab : passTab);
 
+        // Self-service checkbox from data attribute.
+        document.getElementById('editServerSelfService').checked = card.dataset.selfService === 'true';
+
         openModal('editServerModal');
     }
 
@@ -320,6 +332,7 @@
                 // Empty -> null means "leave unchanged" on the backend.
                 password: document.getElementById('editServerPassword').value || null,
                 private_key: document.getElementById('editServerKey').value || null,
+                self_service_enabled: document.getElementById('editServerSelfService').checked,
             };
             await apiCall(`/api/servers/${idx}/edit`, 'POST', body);
             showToast(_('server_saved'), 'success');

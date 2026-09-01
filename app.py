@@ -16,9 +16,12 @@ import subprocess
 import tarfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 import signal
+import struct
+import zlib
 from datetime import datetime, timedelta
 import io
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse, FileResponse
@@ -27,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import FastAPI, Request, Query, UploadFile, File
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 import uvicorn
 import httpx
@@ -38,11 +41,18 @@ except ImportError:
     CaptchaGenerator = None
 
 from managers.ssh_manager import SSHManager
-from managers.awg_manager import AWGManager
+from managers.awg_manager import AWGManager, normalize_special_junk
 from managers.xray_manager import XrayManager
 from managers.wireguard_manager import WireGuardManager
 from managers.backup_manager import BackupManager
 import telegram_bot as tg_bot
+
+from connection_service import (
+    ConnectionService,
+    DEFAULT_SELF_SERVICE_SETTINGS,
+    RateLimitError,
+    SelfServiceError,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -97,7 +107,7 @@ else:
     application_path = os.path.dirname(__file__)
 
 DATA_FILE = os.path.join(application_path, 'data.json')
-CURRENT_VERSION = "v1.6.0"
+CURRENT_VERSION = "v1.6.2"
 BIN_DIR = os.environ.get('TUNNEL_BIN_DIR', os.path.join(application_path, 'bin'))
 TUNNEL_STATE_FILE = os.environ.get('TUNNEL_STATE_FILE', os.path.join(application_path, 'tunnels_state.json'))
 
@@ -196,12 +206,29 @@ def load_data():
         'last_created_count': 0,
         'last_error': None
     })
+    self_service = data['settings'].setdefault('self_service', dict(DEFAULT_SELF_SERVICE_SETTINGS))
+    for key, value in DEFAULT_SELF_SERVICE_SETTINGS.items():
+        self_service.setdefault(key, value)
+    for server in data.get('servers', []):
+        server.setdefault('self_service_enabled', False)
     return data
 
 
 def save_data(data):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    data_dir = os.path.dirname(DATA_FILE) or '.'
+    fd, tmp_path = tempfile.mkstemp(prefix='.data-', suffix='.json', dir=data_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, DATA_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 async def save_data_async(data):
@@ -1057,9 +1084,399 @@ def _manager_call(manager, method, protocol, *args, **kwargs):
     return fn(protocol, *args, **kwargs)
 
 
-def generate_vpn_link(config_text):
-    b64 = base64.b64encode(config_text.strip().encode('utf-8')).decode('utf-8')
-    return f"vpn://{b64}"
+AWG_PROTOCOLS = ('awg', 'awg2', 'awg3', 'awg_legacy')
+
+
+def join_dns(dns1, dns2):
+    """Join the two DNS fields into the `a, b` form used in configs."""
+    parts = [str(value).strip() for value in (dns1, dns2) if value and str(value).strip()]
+    return ', '.join(parts) or None
+
+
+def split_dns(dns):
+    """Split a stored `a, b` DNS string back into two form fields."""
+    parts = [part.strip() for part in str(dns or '').split(',') if part.strip()]
+    parts += [''] * (2 - len(parts))
+    return parts[0], parts[1]
+
+
+def awg_special_junk_from(req):
+    """Collect I1-I5 from a request, or None when the form sent none of them."""
+    values = {key: getattr(req, f'awg_{key}', None) for key in ('i1', 'i2', 'i3', 'i4', 'i5')}
+    if all(value is None for value in values.values()):
+        return None
+    return values
+
+
+# Keys the desktop client treats as AmneziaWG-specific -- configKey::awgProtocolKeys()
+# in client/core/utils/constants/configKeys.h. One of them in a config is what makes
+# the client pick the awg container over the plain wireguard one.
+AWG_CONFIG_KEYS = (
+    'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4',
+    'I1', 'I2', 'I3', 'I4', 'I5',
+    'HeaderProtectionKey', 'ContentPaddingAddition', 'RekeyAfterTime', 'RekeyTimeout',
+    'RejectAfterTime', 'KeepaliveTimeout', 'MaxHandshakeAttempts', 'RandomTrailers',
+    'DisableCookies',
+)
+
+
+def protocol_short_name(protocol: str) -> str:
+    """Short protocol tag for the server name, e.g. `AWG3`."""
+    base = protocol_base(protocol)
+    idx = protocol_instance(protocol)
+    names = {
+        'awg': 'AWG',
+        'awg2': 'AWG2',
+        'awg3': 'AWG3',
+        'awg_legacy': 'AWG-Legacy',
+        'wireguard': 'WG',
+        'xray': 'Xray',
+        'telemt': 'Telemt',
+        'socks5': 'SOCKS5',
+        'dns': 'DNS',
+        'adguard': 'AdGuard',
+        'nginx': 'NGINX',
+    }
+    name = names.get(base, base.upper())
+    return name if idx <= 1 else f'{name}#{idx}'
+
+
+def connection_display_name(server=None, protocol=None) -> str:
+    """`<node> <container>`, e.g. `nl-01 AWG3` -- the name the client will show."""
+    node = str((server or {}).get('name') or (server or {}).get('host') or '').strip()
+    tag = protocol_short_name(protocol) if protocol else ''
+    return ' '.join(part for part in (node, tag) if part)
+
+
+def parse_wg_config(config_text):
+    """Read a WireGuard/AmneziaWG config the way the client's importer does:
+    section headers ignored, every `key = value` line collected into one map."""
+    values = {}
+    for line in str(config_text or '').split('\n'):
+        line = line.strip()
+        if line.startswith('[') and line.endswith(']'):
+            continue
+        sep = line.find('=')
+        if sep > 0:
+            values[line[:sep].strip()] = line[sep + 1:].strip()
+    return values
+
+
+# amnezia-awg only knows one link shape from this panel, and only that shape
+# can carry a name in its fragment.
+NAMED_LINK_SCHEMES = ('vless://',)
+
+# serialization::inbounds::GenerateInboundEntry(): the local SOCKS listener the
+# client patches with a free port and credentials when it connects.
+XRAY_INBOUND = {
+    'listen': '127.0.0.1',
+    'port': 10808,
+    'protocol': 'socks',
+    'settings': {'udp': True},
+}
+
+
+def apply_link_name(config_text, name):
+    """Put the connection's display name in a vless link's fragment.
+
+    AmneziaVPN reads that fragment as the server name (vless::Deserialize hands
+    it to extractXrayConfig as the description), so the panel's per-connection
+    label used to end up as the server's name in the client.
+    """
+    text = str(config_text or '').strip()
+    if not name or not text.startswith(NAMED_LINK_SCHEMES):
+        return config_text
+    return f"{text.split('#', 1)[0]}#{urllib.parse.quote(name)}"
+
+
+def build_xray_client_config(link):
+    """Turn a vless link into the xray client config the desktop client builds.
+
+    A port of serialization::vless::Deserialize -- the client only reaches that
+    code path for a bare `vless://` string, so anything wrapped (a `vpn://` key,
+    a QR code) has to arrive already deserialised.
+    """
+    if not str(link or '').strip().startswith('vless://'):
+        return None
+    parts = urllib.parse.urlsplit(link.strip())
+    host = (parts.hostname or '').strip('[]')
+    uuid_value = urllib.parse.unquote(parts.netloc.rpartition('@')[0])
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if not host or not port or not uuid_value:
+        return None
+
+    query = {}
+    for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+        query.setdefault(key, value)
+
+    user = {'id': uuid_value, 'encryption': query.get('encryption', 'none')}
+    stream = {}
+
+    network = query.get('type', 'tcp')
+    if network != 'tcp':
+        stream['network'] = network
+    if network == 'kcp':
+        if query.get('seed'):
+            stream.setdefault('kcpSettings', {})['seed'] = query['seed']
+        if query.get('headerType', 'none') != 'none':
+            stream.setdefault('kcpSettings', {}).setdefault('header', {})['type'] = query['headerType']
+    elif network == 'http':
+        if query.get('path', '/') != '/':
+            stream.setdefault('httpSettings', {})['path'] = query['path']
+        if 'host' in query:
+            stream.setdefault('httpSettings', {})['host'] = query['host'].split(',')
+    elif network == 'ws':
+        if query.get('path', '/') != '/':
+            stream.setdefault('wsSettings', {})['path'] = query['path']
+        if 'host' in query:
+            stream.setdefault('wsSettings', {}).setdefault('headers', {})['Host'] = query['host']
+    elif network == 'quic':
+        if 'quicSecurity' in query:
+            quic = stream.setdefault('quicSettings', {})
+            quic['security'] = query['quicSecurity']
+            if query['quicSecurity'] != 'none':
+                quic['key'] = query.get('key', '')
+            if query.get('headerType', 'none') != 'none':
+                quic.setdefault('header', {})['type'] = query['headerType']
+    elif network == 'grpc':
+        if 'serviceName' in query:
+            stream.setdefault('grpcSettings', {})['serviceName'] = query['serviceName']
+        if 'mode' in query:
+            stream.setdefault('grpcSettings', {})['multiMode'] = query['mode'] == 'multi'
+
+    security = query.get('security', 'none')
+    tls_key = 'xtlsSettings' if security == 'xtls' else ('tlsSettings' if security == 'tls' else 'realitySettings')
+    if security != 'none':
+        stream['security'] = security
+    if 'sni' in query:
+        stream.setdefault(tls_key, {})['serverName'] = query['sni']
+    if 'alpn' in query:
+        # xray does not speak h2 here, and the client drops it
+        alpn = [item for item in query['alpn'].split(',') if item and item != 'h2']
+        if alpn:
+            stream.setdefault(tls_key, {})['alpn'] = alpn
+    if security in ('xtls', 'reality'):
+        user['flow'] = query.get('flow', '')
+    if security == 'reality':
+        reality = stream.setdefault('realitySettings', {})
+        for param, field in (('fp', 'fingerprint'), ('pbk', 'publicKey'), ('sid', 'shortId')):
+            if param in query:
+                reality[field] = query[param]
+        # the client only reads the long spelling, the panel emits the short one
+        spider = query.get('spiderX') or query.get('spx')
+        if spider:
+            reality['spiderX'] = spider
+
+    outbound = {
+        'protocol': 'vless',
+        'settings': {'vnext': [{'address': host, 'port': port, 'users': [user]}]},
+        'streamSettings': stream,
+    }
+    return {'inbounds': [dict(XRAY_INBOUND)], 'outbounds': [outbound]}
+
+
+def build_amnezia_xray_config(config_text, description):
+    """Wrap a vless link the way ImportController::extractXrayConfig would."""
+    client_config = build_xray_client_config(config_text)
+    if not client_config:
+        return None
+    serialized = json.dumps(client_config, indent=4, sort_keys=True) + '\n'
+    return {
+        'containers': [{
+            'container': 'amnezia-xray',
+            'xray': {'last_config': serialized, 'isThirdPartyConfig': True},
+        }],
+        'defaultContainer': 'amnezia-xray',
+        'description': description,
+        'hostName': client_config['outbounds'][0]['settings']['vnext'][0]['address'],
+    }
+
+
+def build_amnezia_config(config_text, description):
+    """Wrap a WireGuard/AmneziaWG config into Amnezia's own server config format.
+
+    A plain `.conf` cannot carry a name: extractWireGuardConfig() overwrites
+    description with nextAvailableServerName(), which is why every imported key
+    lands as "Server 1". This JSON goes down the ConfigTypes::Amnezia branch
+    instead, which keeps whatever description it is given. Field for field it is
+    what the client itself builds from the same config.
+    """
+    if str(config_text or '').strip().startswith(NAMED_LINK_SCHEMES):
+        return build_amnezia_xray_config(config_text, description)
+    values = parse_wg_config(config_text)
+    host, _, port = values.get('Endpoint', '').rpartition(':')
+    host = host.strip('[]')
+    if not host or not port.isdigit():
+        return None
+    if not (values.get('PrivateKey') and values.get('Address') and values.get('PublicKey')):
+        return None
+
+    last_config = {
+        'config': str(config_text),
+        'hostName': host,
+        'port': int(port),
+        'client_priv_key': values['PrivateKey'],
+        'client_ip': values['Address'],
+        'server_pub_key': values['PublicKey'],
+    }
+    psk = values.get('PresharedKey') or values.get('PreSharedKey')
+    if psk:
+        last_config['psk_key'] = psk
+    if values.get('PersistentKeepalive'):
+        last_config['persistent_keep_alive'] = values['PersistentKeepalive']
+    last_config['allowed_ips'] = [
+        part.strip() for part in values.get('AllowedIPs', '').split(',') if part.strip()
+    ]
+
+    protocol_name = 'wireguard'
+    for key in AWG_CONFIG_KEYS:
+        if values.get(key):
+            last_config[key] = values[key]
+            protocol_name = 'awg'
+    # processAmneziaConfig() replaces this with the client's own default on
+    # import, so a custom MTU only survives in the raw config below.
+    last_config['mtu'] = values.get('MTU') or ('1376' if protocol_name == 'awg' else '1420')
+
+    container = 'amnezia-awg' if protocol_name == 'awg' else 'amnezia-wireguard'
+    config = {
+        'containers': [{
+            'container': container,
+            protocol_name: {
+                'last_config': json.dumps(last_config, indent=4) + '\n',
+                'isThirdPartyConfig': True,
+                'port': str(port),
+                'transport_proto': 'udp',
+            },
+        }],
+        'defaultContainer': container,
+        'description': description,
+        'hostName': host,
+    }
+    dns = [part.strip() for part in values.get('DNS', '').split(',') if part.strip()]
+    if len(dns) >= 2:
+        config['dns1'], config['dns2'] = dns[0], dns[1]
+    return config
+
+
+def amnezia_config_bytes(config_text, description):
+    """qCompress(json) -- what an Amnezia `vpn://` key and QR series both carry.
+
+    qCompress prepends the uncompressed size as a big-endian uint32 and
+    qUncompress refuses anything without it. Empty when the config is not a
+    WireGuard/AmneziaWG one, so callers fall back to the plain key.
+    """
+    if not description:
+        return b''
+    config = build_amnezia_config(config_text, description)
+    if not config:
+        return b''
+    raw = json.dumps(config, indent=4).encode('utf-8')
+    return struct.pack('>I', len(raw)) + zlib.compress(raw, 8)
+
+
+def amnezia_vpn_key(config_text, description):
+    """The payload half of an Amnezia `vpn://` key."""
+    payload = amnezia_config_bytes(config_text, description)
+    if not payload:
+        return ''
+    return base64.urlsafe_b64encode(payload).decode('utf-8').rstrip('=')
+
+
+# ImportController::parseQrCodeChunk reassembles a scanned config from a series
+# of framed chunks: a QDataStream carrying qint16 magic, quint8 total, quint8
+# index and the payload slice as a QByteArray (quint32 length + bytes), the
+# whole frame base64url'd into one QR code.
+QR_MAGIC = 1984
+
+# The Android scanner (CameraActivity.kt) builds `ImageAnalysis.Builder().build()`
+# with no ResolutionSelector, so CameraX hands ML Kit 640x480 frames -- which is
+# why a whole config in one code never scanned: it lands at version 19 raw or 26
+# wrapped, around 2-3 px per module in such a frame. 144 bytes keeps every frame
+# at version 8-9, under 55x55 modules, which survived a simulated VGA capture
+# down to a QR filling only 40% of the frame height.
+QR_CHUNK_SIZE = 144
+
+# quint8 chunk counter on the reading side.
+QR_MAX_CHUNKS = 255
+
+
+def amnezia_qr_chunks(config_text, description):
+    """Split the config into QR frames the client can reassemble."""
+    payload = amnezia_config_bytes(config_text, description)
+    if not payload:
+        return []
+    total = (len(payload) + QR_CHUNK_SIZE - 1) // QR_CHUNK_SIZE
+    if total > QR_MAX_CHUNKS:
+        return []
+    # spread the bytes evenly rather than leaving a stub last frame
+    size = (len(payload) + total - 1) // total
+    chunks = []
+    for index in range(total):
+        part = payload[index * size:(index + 1) * size]
+        frame = struct.pack('>hBBI', QR_MAGIC, total, index, len(part)) + part
+        chunks.append(base64.urlsafe_b64encode(frame).decode('utf-8').rstrip('='))
+    return chunks
+
+
+def generate_vpn_link(config_text, server=None, protocol=None):
+    """Encode a config as a vpn:// key.
+
+    Amnezia decodes with QByteArray::Base64UrlEncoding|OmitTrailingEquals,
+    and Qt silently *skips* characters outside that alphabet instead of
+    failing. Standard base64 therefore corrupts the payload as soon as it
+    emits '+' or '/' -- which a config containing '>' or '?' does, the
+    default I1 packet among them.
+    """
+    key = amnezia_vpn_key(config_text, connection_display_name(server, protocol))
+    if key:
+        return f"vpn://{key}"
+    b64 = base64.urlsafe_b64encode(config_text.strip().encode('utf-8')).decode('utf-8')
+    return f"vpn://{b64.rstrip('=')}"
+
+
+def config_payloads(config_text, server=None, protocol=None):
+    """What every config view needs: the config, the key, the QR frames, the name.
+
+    The frames carry no `vpn://` prefix -- extractConfigFromQr() hands the
+    scanned text straight to QByteArray::fromBase64, which drops ':' and '/'
+    but keeps 'v', 'p' and 'n', shifting the whole payload by three characters.
+    The list is empty when the config is not a WireGuard/AmneziaWG one; the QR
+    then stays on the raw config, which is all such clients understand anyway.
+    """
+    name = connection_display_name(server, protocol)
+    if not str(config_text or '').strip():
+        return {'config': config_text, 'vpn_link': '', 'vpn_qr_chunks': [], 'vpn_name': name}
+    config_text = apply_link_name(config_text, name)
+    key = amnezia_vpn_key(config_text, name)
+    return {
+        'config': config_text,
+        'vpn_link': f"vpn://{key}" if key else generate_vpn_link(config_text),
+        'vpn_qr_chunks': amnezia_qr_chunks(config_text, name),
+        'vpn_name': name,
+    }
+
+
+self_service_connections = ConnectionService(
+    load_data=load_data,
+    save_data=save_data,
+    data_lock=DATA_LOCK,
+    get_ssh=get_ssh,
+    get_protocol_manager=get_protocol_manager,
+    manager_call=_manager_call,
+    generate_vpn_link=generate_vpn_link,
+)
+
+
+def _self_service_error_response(exc):
+    if isinstance(exc, RateLimitError):
+        return JSONResponse({'error': str(exc)}, status_code=429)
+    if isinstance(exc, SelfServiceError):
+        return JSONResponse({'error': str(exc)}, status_code=exc.status_code)
+    logger.exception("Unexpected self-service error")
+    return JSONResponse({'error': 'Internal server error'}, status_code=500)
 
 
 # ===================== API tokens =====================
@@ -1437,11 +1854,29 @@ def get_current_user(request: Request):
     return None
 
 
+def static_version():
+    """Cache buster for /static: the newest mtime under it.
+
+    Browsers hold on to style.css across a redeploy -- it is served with an
+    ETag but no Cache-Control, so heuristic caching keeps a stale copy and the
+    page renders new markup against old rules.
+    """
+    newest = 0.0
+    for root, _dirs, files in os.walk(os.path.join(application_path, 'static')):
+        for name in files:
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+            except OSError:
+                continue
+    return str(int(newest))
+
+
 def tpl(request, template, **kwargs):
     data = load_data()
     lang = request.cookies.get('lang', 'en')
     ctx = {
         'request': request,
+        'static_v': static_version(),
         'current_user': get_current_user(request),
         'site_settings': data.get('settings', {}).get('appearance', {}),
         'captcha_settings': data.get('settings', {}).get('captcha', {}),
@@ -1483,6 +1918,7 @@ class EditServerRequest(BaseModel):
     # fields can be omitted to keep current auth unchanged.
     password: Optional[str] = None
     private_key: Optional[str] = None
+    self_service_enabled: Optional[bool] = None
 
 
 class ReorderServersRequest(BaseModel):
@@ -1512,6 +1948,27 @@ class InstallProtocolRequest(BaseModel):
     # NGINX
     nginx_domain: Optional[str] = None
     nginx_email: Optional[str] = None
+    # AmneziaWG: values that end up in the generated client configs
+    awg_mtu: Optional[str] = None
+    awg_dns1: Optional[str] = None
+    awg_dns2: Optional[str] = None
+    awg_i1: Optional[str] = None
+    awg_i2: Optional[str] = None
+    awg_i3: Optional[str] = None
+    awg_i4: Optional[str] = None
+    awg_i5: Optional[str] = None
+
+
+class AwgSettingsRequest(BaseModel):
+    protocol: str = 'awg2'
+    mtu: Optional[str] = None
+    dns1: Optional[str] = None
+    dns2: Optional[str] = None
+    i1: Optional[str] = None
+    i2: Optional[str] = None
+    i3: Optional[str] = None
+    i4: Optional[str] = None
+    i5: Optional[str] = None
 
 
 class Socks5SettingsRequest(BaseModel):
@@ -1646,6 +2103,22 @@ class AutoBackupSettings(BaseModel):
     interval_hours: int = 24
 
 
+class SelfServiceSettings(BaseModel):
+    enabled: bool = False
+    web_enabled: bool = True
+    telegram_enabled: bool = True
+    max_connections_per_user: int = Field(5, ge=1, le=100)
+    rate_limit_count: int = Field(3, ge=1, le=100)
+    rate_limit_window_seconds: int = Field(60, ge=1, le=86400)
+    allowed_protocols: List[str] = Field(default_factory=lambda: ['awg', 'awg2'])
+
+
+class SelfServiceConnectionRequest(BaseModel):
+    server_id: int
+    protocol: str = 'awg'
+    name: str = 'VPN Connection'
+
+
 
 
 class UpdateUserRequest(BaseModel):
@@ -1666,10 +2139,22 @@ class SaveSettingsRequest(BaseModel):
     telegram: TelegramSettings
     ssl: SSLSettings
     auto_backup: AutoBackupSettings = AutoBackupSettings()
+    self_service: SelfServiceSettings = SelfServiceSettings()
 
 
 class ToggleUserRequest(BaseModel):
     enabled: bool
+
+
+def _normalize_telegram_id(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if not normalized.isdigit():
+        raise ValueError('Telegram ID must be numeric')
+    return normalized
 
 
 class AddUserConnectionRequest(BaseModel):
@@ -1829,7 +2314,7 @@ async def startup():
     tg_cfg = data.get('settings', {}).get('telegram', {})
     if tg_cfg.get('enabled') and tg_cfg.get('token'):
         logger.info("Starting Telegram bot from saved settings...")
-        tg_bot.launch_bot(tg_cfg['token'], load_data, generate_vpn_link, save_data)
+        tg_bot.launch_bot(tg_cfg['token'], load_data, generate_vpn_link, save_data, self_service_svc=self_service_connections)
 
 
 def _auto_backup_due(auto_backup: dict, now: Optional[datetime] = None) -> bool:
@@ -2314,6 +2799,8 @@ async def api_edit_server(request: Request, server_id: int, req: EditServerReque
         server['password'] = new_pass
         server['private_key'] = new_key
         server['server_info'] = server_info
+        if req.self_service_enabled is not None:
+            server['self_service_enabled'] = bool(req.self_service_enabled)
         save_data(data)
         # Drop the stale pooled connection: credentials/host may have changed.
         drop_ssh(server)
@@ -2740,6 +3227,14 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
             install_protocol = req.protocol
         install_base = protocol_base(install_protocol)
 
+        awg_special_junk = awg_special_junk_from(req) if install_base in AWG_PROTOCOLS else None
+        if awg_special_junk is not None:
+            # Reject a malformed packet before touching the server.
+            try:
+                normalize_special_junk(awg_special_junk)
+            except ValueError as e:
+                return JSONResponse({'error': str(e)}, status_code=400)
+
         ssh = get_ssh(server)
         ssh.connect()
 
@@ -2798,6 +3293,14 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 domain=req.nginx_domain,
                 email=req.nginx_email,
             )
+        elif install_base in AWG_PROTOCOLS:
+            result = manager.install_protocol(
+                install_protocol,
+                port=req.port,
+                mtu=req.awg_mtu,
+                dns=join_dns(req.awg_dns1, req.awg_dns2),
+                special_junk=awg_special_junk,
+            )
         else:
             result = manager.install_protocol(install_protocol, port=req.port)
 
@@ -2815,6 +3318,10 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
             'port': req.port,
             'awg_params': result.get('awg_params', {}),
         }
+        if result.get('mtu'):
+            proto_record['mtu'] = result['mtu']
+        if result.get('dns'):
+            proto_record['dns'] = result['dns']
         if install_base == 'adguard':
             proto_record['mode'] = result.get('mode')
             proto_record['internal_ip'] = result.get('internal_ip')
@@ -2896,6 +3403,80 @@ async def api_socks5_update_credentials(request: Request, server_id: int, req: S
         return result
     except Exception as e:
         logger.exception("Error updating SOCKS5 credentials")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/awg/settings', tags=["Protocols"])
+async def api_awg_settings_get(request: Request, server_id: int, req: ProtocolRequest):
+    """Return MTU, DNS and the special junk packets I1-I5 of an AWG server."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    if protocol_base(req.protocol) not in AWG_PROTOCOLS:
+        return JSONResponse({'error': 'Not an AmneziaWG protocol'}, status_code=400)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        ssh = get_ssh(data['servers'][server_id])
+        ssh.connect()
+        try:
+            settings = AWGManager(ssh).get_awg_settings(req.protocol)
+        finally:
+            ssh.disconnect()
+        settings['dns1'], settings['dns2'] = split_dns(settings.get('dns'))
+        return settings
+    except Exception as e:
+        logger.exception("Error getting AWG settings")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/awg/settings/save', tags=["Protocols"])
+async def api_awg_settings_save(request: Request, server_id: int, req: AwgSettingsRequest):
+    """Update MTU, DNS and I1-I5 and apply them to the running interface."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    if protocol_base(req.protocol) not in AWG_PROTOCOLS:
+        return JSONResponse({'error': 'Not an AmneziaWG protocol'}, status_code=400)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        special_junk = {key: getattr(req, key) for key in ('i1', 'i2', 'i3', 'i4', 'i5')}
+        if all(value is None for value in special_junk.values()):
+            special_junk = None
+        else:
+            # Reject a malformed packet before opening an SSH connection.
+            normalize_special_junk(special_junk)
+        ssh = get_ssh(server)
+        ssh.connect()
+        try:
+            # An empty string means "clear it", None means "leave it alone";
+            # join_dns() collapses two blank fields to None, so restore the
+            # distinction here or the DNS could never be reset from the UI.
+            dns = None
+            if req.dns1 is not None or req.dns2 is not None:
+                dns = join_dns(req.dns1, req.dns2) or ''
+            settings = AWGManager(ssh).update_awg_settings(
+                req.protocol,
+                mtu=req.mtu,
+                dns=dns,
+                special_junk=special_junk,
+            )
+        finally:
+            ssh.disconnect()
+        proto_record = server.setdefault('protocols', {}).get(req.protocol)
+        if proto_record is not None:
+            proto_record['mtu'] = settings.get('mtu')
+            proto_record['dns'] = settings.get('dns')
+            save_data(data)
+        settings['dns1'], settings['dns2'] = split_dns(settings.get('dns'))
+        settings['status'] = 'success'
+        return settings
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("Error saving AWG settings")
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
@@ -3315,7 +3896,7 @@ async def api_add_connection(request: Request, server_id: int, req: AddConnectio
         ssh.disconnect()
 
         if result.get('config'):
-            result['vpn_link'] = generate_vpn_link(result['config'])
+            result.update(config_payloads(result['config'], server, req.protocol))
 
         # Link connection to user if specified
         if req.user_id and result.get('client_id'):
@@ -3435,7 +4016,7 @@ async def api_rename_connection(request: Request, server_id: int, req: RenameCon
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
         result = _manager_call(manager, 'rename_client', req.protocol, req.client_id, new_name) or {}
-        # Optional per-peer bandwidth limit (AWG managers only)
+        # Optional per-peer bandwidth limit (managers exposing set_speed_limit)
         speed_warning = None
         if req.max_speed >= 0 and hasattr(manager, 'set_speed_limit'):
             try:
@@ -3483,7 +4064,7 @@ async def api_save_connection_config(request: Request, server_id: int, req: Save
         manager = get_protocol_manager(ssh, req.protocol)
         _manager_call(manager, 'save_client_config', req.protocol, req.client_id, config_text)
         ssh.disconnect()
-        return {'status': 'success', 'vpn_link': generate_vpn_link(config_text)}
+        return {'status': 'success', **config_payloads(config_text, server, req.protocol)}
     except Exception as e:
         logger.exception("Error saving connection config")
         return JSONResponse({'error': str(e)}, status_code=500)
@@ -3516,8 +4097,7 @@ async def api_get_connection_config(request: Request, server_id: int, req: Conne
         manager = get_protocol_manager(ssh, req.protocol)
         config = _manager_call(manager, 'get_client_config', req.protocol, req.client_id, server['host'], port)
         ssh.disconnect()
-        vpn_link = generate_vpn_link(config) if config else ''
-        return {'config': config, 'vpn_link': vpn_link}
+        return {'config': config, **config_payloads(config, server, req.protocol)}
     except Exception as e:
         logger.exception("Error getting connection config")
         return JSONResponse({'error': str(e)}, status_code=500)
@@ -3611,6 +4191,10 @@ async def api_add_user(request: Request, req: AddUserRequest):
     try:
         data = load_data()
         lang = request.cookies.get('lang', 'ru')
+        try:
+            telegram_id = _normalize_telegram_id(req.telegramId)
+        except ValueError as exc:
+            return JSONResponse({'error': str(exc)}, status_code=400)
         # Check duplicate
         if any(u['username'] == req.username for u in data.get('users', [])):
             return JSONResponse({'error': _t('user_exists', lang)}, status_code=400)
@@ -3621,7 +4205,7 @@ async def api_add_user(request: Request, req: AddUserRequest):
             'username': req.username,
             'password_hash': hash_password(req.password),
             'role': req.role,
-            'telegramId': req.telegramId,
+            'telegramId': telegram_id,
             'email': req.email,
             'description': req.description,
             'traffic_limit': int(req.traffic_limit * 1024**3) if req.traffic_limit else 0,
@@ -3682,7 +4266,7 @@ async def api_add_user(request: Request, req: AddUserRequest):
                     result['connection_created'] = True
                     if conn_result.get('config'):
                         result['config'] = conn_result['config']
-                        result['vpn_link'] = generate_vpn_link(conn_result['config'])
+                        result.update(config_payloads(conn_result['config'], server, req.protocol))
         return result
     except Exception as e:
         logger.exception("Error adding user")
@@ -3699,7 +4283,11 @@ async def api_update_user(request: Request, user_id: str, req: UpdateUserRequest
         if not user:
             return JSONResponse({'error': 'User not found'}, status_code=404)
             
-        if req.telegramId is not None: user['telegramId'] = req.telegramId
+        if req.telegramId is not None:
+            try:
+                user['telegramId'] = _normalize_telegram_id(req.telegramId)
+            except ValueError as exc:
+                return JSONResponse({'error': str(exc)}, status_code=400)
         if req.email is not None: user['email'] = req.email
         if req.description is not None: user['description'] = req.description
         if req.traffic_limit is not None: 
@@ -3849,7 +4437,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
         resp = {'status': 'success'}
         if result.get('config'):
             resp['config'] = result['config']
-            resp['vpn_link'] = generate_vpn_link(result['config'])
+            resp.update(config_payloads(result['config'], server, req.protocol))
         return resp
     except Exception as e:
         logger.exception("Error adding user connection")
@@ -3889,6 +4477,41 @@ async def api_my_connections(request: Request):
         else:
             c['server_name'] = 'Unknown'
     return {'connections': conns}
+
+
+@app.get('/api/my/connections/options', tags=["Self-service"])
+async def api_my_connection_options(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        return await self_service_connections.get_self_service_options(user['id'], 'web')
+    except Exception as exc:
+        return _self_service_error_response(exc)
+
+
+@app.post('/api/my/connections/add', tags=["Self-service"])
+async def api_my_connection_add(request: Request, payload: SelfServiceConnectionRequest):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        return await self_service_connections.create_user_connection(
+            user['id'], payload.server_id, payload.protocol, payload.name, 'web'
+        )
+    except Exception as exc:
+        return _self_service_error_response(exc)
+
+
+@app.post('/api/my/connections/{connection_id}/delete', tags=["Self-service"])
+async def api_my_connection_delete(request: Request, connection_id: str):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        return await self_service_connections.delete_user_connection(user['id'], connection_id, 'web')
+    except Exception as exc:
+        return _self_service_error_response(exc)
 
 
 @app.post('/api/users/{user_id}/share/setup', tags=["Users"])
@@ -3992,8 +4615,7 @@ async def api_share_config(token: str, connection_id: str, request: Request):
         manager = get_protocol_manager(ssh, conn['protocol'])
         config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], server['host'], port)
         ssh.disconnect()
-        vpn_link = generate_vpn_link(config) if config else ''
-        return {'config': config, 'vpn_link': vpn_link}
+        return {'config': config, **config_payloads(config, server, conn['protocol'])}
     except Exception as e:
         logger.exception("Error getting shared config")
         return JSONResponse({'error': str(e)}, status_code=500)
@@ -4024,8 +4646,7 @@ async def api_my_connection_config(request: Request, connection_id: str):
         manager = get_protocol_manager(ssh, conn['protocol'])
         config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], server['host'], port)
         ssh.disconnect()
-        vpn_link = generate_vpn_link(config) if config else ''
-        return {'config': config, 'vpn_link': vpn_link}
+        return {'config': config, **config_payloads(config, server, conn['protocol'])}
     except Exception as e:
         logger.exception("Error getting my connection config")
         return JSONResponse({'error': str(e)}, status_code=500)
@@ -4178,6 +4799,9 @@ async def save_settings(request: Request, payload: SaveSettingsRequest):
         'last_created_count': old_auto_backup.get('last_created_count', 0),
         'last_error': old_auto_backup.get('last_error')
     }
+    self_service = payload.self_service.dict()
+    self_service['allowed_protocols'] = [p for p in self_service.get('allowed_protocols', []) if p in ('awg', 'awg2')]
+    settings['self_service'] = self_service
     save_data(data)
     logger.info("Settings saved (including captcha, telegram and auto backup)")
 
@@ -4186,7 +4810,7 @@ async def save_settings(request: Request, payload: SaveSettingsRequest):
     if tg_cfg.enabled and tg_cfg.token:
         if not tg_bot.is_running():
             logger.info("Starting Telegram bot (settings save)...")
-            tg_bot.launch_bot(tg_cfg.token, load_data, generate_vpn_link, save_data)
+            tg_bot.launch_bot(tg_cfg.token, load_data, generate_vpn_link, save_data, self_service_svc=self_service_connections)
     else:
         if tg_bot.is_running():
             logger.info("Stopping Telegram bot (settings save)...")
@@ -4213,7 +4837,7 @@ async def api_telegram_toggle(request: Request):
         save_data(data)
         return {'status': 'stopped', 'bot_running': False}
     else:
-        tg_bot.launch_bot(token, load_data, generate_vpn_link, save_data)
+        tg_bot.launch_bot(token, load_data, generate_vpn_link, save_data, self_service_svc=self_service_connections)
         tg_cfg['enabled'] = True
         data['settings']['telegram'] = tg_cfg
         save_data(data)

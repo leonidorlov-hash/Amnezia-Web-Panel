@@ -7,9 +7,10 @@
     <meta name="description" content="{{ _('site_description') }}">
     <title>{{ site_settings.title or 'Amnezia Panel' }} {% block title_extra %}{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_v }}">
     <script>!function () { var t = localStorage.getItem('theme') || 'dark'; document.documentElement.setAttribute('data-theme', t) }()</script>
     <script src="/static/js/qrcode.min.js"></script>
+    <script src="/static/js/searchable-select.js" defer></script>
     {% block head_extra %}{% endblock %}
     <style>
         .lang-check {

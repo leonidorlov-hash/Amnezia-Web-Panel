@@ -23,10 +23,17 @@ from cryptography.hazmat.primitives import serialization
 
 logger = logging.getLogger(__name__)
 
+# Dual-stack behaviour for AWG tunnels, overridable like the panel's other
+# environment knobs (SECRET_KEY, TUNNEL_BIN_DIR): "auto" probes the server,
+# "off" keeps every tunnel IPv4-only, "on" forces dual-stack.
+AWG_IPV6_ENV = 'AWG_IPV6'
+IPV6_FORCE_OFF = ('off', 'false', '0', 'no', 'disable', 'disabled')
+IPV6_FORCE_ON = ('on', 'true', '1', 'yes', 'force', 'forced')
+
 # Default AWG parameters (from protocols_defs.h)
 AWG_DEFAULTS = {
     'port': '55424',
-    'mtu': '1280',
+    'mtu': '1376',
     'subnet_address': '10.8.1.0',
     'subnet_cidr': '24',
     'subnet_ip': '10.8.1.1',
@@ -73,6 +80,122 @@ AWG3_CONFIG_KEYS = tuple(config_key for _, config_key in AWG3_PARAM_MAP)
 # "Invalid argument": the explanation only goes to net_dbg_ratelimited.
 AWG3_MIN_JUNK_SIZE = 12
 
+# AWG 3.1 keys only exist in amneziawg kernel module 3.0+ (the 1.0.x line the
+# Amnezia PPA still ships predates them). awg-quick prefers the host module and
+# falls back to amneziawg-go only when `ip link add ... type amneziawg` fails,
+# i.e. when no module is installed at all. With an older module loaded the
+# interface is created, `awg setconf` then fails with a bare "Invalid argument"
+# and awg-quick deletes the interface again: the install reports success and no
+# tunnel exists (issue #113). The container's amneziawg-go does speak the full
+# 3.1 key set, so the way out is to force userspace for awg3 on such hosts.
+AWG3_MIN_KERNEL_MODULE_MAJOR = 3
+
+# awg-quick has no switch for that, so the image gets a one-line patch adding
+# one. Without WG_FORCE_USERSPACE set the function behaves exactly as before.
+AWG_QUICK_FORCE_USERSPACE_PATCH = (
+    'RUN sed -i \'s|if ! cmd ip link add "$INTERFACE" type amneziawg; then'
+    '|if [ -n "$WG_FORCE_USERSPACE" ]; then'
+    ' cmd "${WG_QUICK_USERSPACE_IMPLEMENTATION:-amneziawg-go}" "$INTERFACE";'
+    ' return 0; fi;'
+    ' if ! cmd ip link add "$INTERFACE" type amneziawg; then|\' /usr/bin/awg-quick'
+    ' && grep -q WG_FORCE_USERSPACE /usr/bin/awg-quick\n'
+)
+
+# Runs inside the awg3 container before awg-quick. Creating a throwaway
+# interface both loads the module (a module present on disk but not yet loaded
+# would otherwise read as absent) and proves the container can reach it.
+AWG3_USERSPACE_GUARD = """
+# AWG 3.1 needs amneziawg kernel module 3.0+; an older one accepts the
+# interface but rejects the config, and awg-quick will not fall back once
+# `ip link add` has succeeded (issue #113).
+if ip link add awgprobe type amneziawg 2>/dev/null; then
+  KMOD_VERSION=$(cat /sys/module/amneziawg/version 2>/dev/null)
+  ip link delete awgprobe 2>/dev/null
+  case "$KMOD_VERSION" in
+    3.*|[4-9].*|[1-9][0-9].*) ;;
+    *) echo "amneziawg kernel module ${KMOD_VERSION:-unknown} predates AWG 3.1, using userspace amneziawg-go"
+       export WG_FORCE_USERSPACE=1 ;;
+  esac
+fi
+"""
+
+# Special junk packets I1-I5: free-form packets the peer sends right before
+# the handshake initiation, so a session opens with bytes that belong to some
+# other protocol. The kernel module parses each value as a list of tags
+# (jp_parse_tags in junk.c):
+#   <b 0xHEX>  fixed bytes          <r N>   N random bytes
+#   <c>        packet counter, 4B   <rc N>  N random latin letters
+#   <t>        unix time, 4B        <rd N>  N random digits
+SPECIAL_JUNK_KEYS = ('i1', 'i2', 'i3', 'i4', 'i5')
+
+# Byte-identical to protocols::awg::defaultSpecialJunk1 in the desktop client:
+# a DNS response for icloud.com preceded by a random 2-byte transaction id.
+AWG_DEFAULT_I1 = (
+    '<r 2><b 0x858000010001000000000669636c6f756403636f6d'
+    '0000010001c00c000100010000105a00044d583737>'
+)
+
+_SPECIAL_JUNK_TAG_RE = re.compile(r'<\s*(b|c|t|r|rc|rd)(?:\s+([^>]*?))?\s*>')
+
+# A junk packet still has to fit into one datagram.
+SPECIAL_JUNK_MAX_SIZE = 1280
+
+
+def validate_special_junk(value):
+    """Validate an I1-I5 value and return the packet size it produces."""
+    text = (value or '').strip()
+    if not text:
+        return 0
+
+    size = 0
+    pos = 0
+    for match in _SPECIAL_JUNK_TAG_RE.finditer(text):
+        between = text[pos:match.start()].strip()
+        if between:
+            raise ValueError(f"unexpected text outside a tag: {between!r}")
+        pos = match.end()
+
+        tag = match.group(1)
+        arg = (match.group(2) or '').strip()
+        if tag in ('c', 't'):
+            if arg:
+                raise ValueError(f"<{tag}> takes no argument")
+            size += 4
+        elif tag == 'b':
+            digits = arg[2:] if arg[:2].lower() == '0x' else ''
+            if not digits or len(digits) % 2 or not all(c in '0123456789abcdefABCDEF' for c in digits):
+                raise ValueError("<b> expects an even number of hex digits, e.g. <b 0xdeadbeef>")
+            size += len(digits) // 2
+        else:
+            if not arg.isdigit() or int(arg) <= 0:
+                raise ValueError(f"<{tag}> expects a positive byte count, e.g. <{tag} 16>")
+            size += int(arg)
+
+    trailing = text[pos:].strip()
+    if trailing:
+        raise ValueError(f"unexpected text outside a tag: {trailing!r}")
+    if size == 0:
+        raise ValueError("no packet tags found, nothing would be sent")
+    if size > SPECIAL_JUNK_MAX_SIZE:
+        raise ValueError(f"packet is {size} bytes, maximum is {SPECIAL_JUNK_MAX_SIZE}")
+    return size
+
+
+def normalize_special_junk(values):
+    """Validate an {'i1': ..., 'i5': ...} mapping and drop empty entries."""
+    result = {}
+    for key in SPECIAL_JUNK_KEYS:
+        value = (values or {}).get(key)
+        value = (value or '').strip()
+        if not value:
+            continue
+        try:
+            validate_special_junk(value)
+        except ValueError as exc:
+            raise ValueError(f"{key.upper()}: {exc}") from exc
+        result[key] = value
+    return result
+
 # Connection flood monitoring (P2P/torrent detection)
 CONN_WARN_THRESHOLD = 600    # simultaneous connections per peer that trigger a warning
 CONN_WARN_COOLDOWN = 3600    # min seconds between two recorded warnings for the same peer
@@ -108,6 +231,7 @@ def generate_awg_params(use_ranges=False, awg3=False):
     For legacy AWG (use_ranges=False): generates fixed single H values.
     For AWG 3.1 (awg3=True): additionally generates header protection key,
     content padding and randomized protocol timings.
+    Non-legacy protocols also get the default special junk packet (I1).
     """
     import random
 
@@ -167,6 +291,11 @@ def generate_awg_params(use_ranges=False, awg3=False):
         'underload_packet_magic_header': h3,
         'transport_packet_magic_header': h4,
     }
+
+    if use_ranges:
+        # The desktop client ships a special junk packet out of the box; not
+        # setting one leaves the first packet of every session recognisable.
+        params['i1'] = AWG_DEFAULT_I1
 
     if awg3:
         # Ranges are "min-max" (u16_range_from_string in amneziawg-tools).
@@ -382,13 +511,101 @@ class AWGManager:
         prefix = gateway.rsplit(':', 1)[0] + ':'
         return f"{prefix}{octet:x}"
 
-    def _detect_server_ipv6(self):
-        """Check if the host has working IPv6 (default route or any global address)."""
+    def _detect_server_ipv6(self, protocol_type=None):
+        """Decide whether the tunnel should be dual-stack.
+
+        The AWG_IPV6 environment variable forces the answer ("off" / "on");
+        in the default "auto" mode the server is probed.
+
+        Auto-detection requires IPv6 to work end-to-end: a global address on
+        the host *and* a default IPv6 route inside the protocol container.
+        Docker networks are IPv4-only unless the daemon is explicitly
+        configured for IPv6, so checking the host alone can enable a
+        dual-stack tunnel whose NAT66 has nowhere to forward. Clients then
+        receive an IPv6 address, an IPv6 DNS server and ::/0 with no route
+        out, which blackholes traffic on IPv6-preferring clients (notably
+        macOS) even though the host's own IPv6 is fine.
+        """
+        mode = os.environ.get(AWG_IPV6_ENV, 'auto').strip().lower()
+        if mode in IPV6_FORCE_OFF:
+            logger.info("%s=%s, keeping the tunnel IPv4-only", AWG_IPV6_ENV, mode)
+            return False
+        if mode in IPV6_FORCE_ON:
+            logger.info("%s=%s, forcing a dual-stack tunnel", AWG_IPV6_ENV, mode)
+            return True
+
         out, _, _ = self.ssh.run_sudo_command("ip -6 route show default 2>/dev/null")
+        if not out.strip():
+            out, _, _ = self.ssh.run_sudo_command("ip -6 addr show scope global 2>/dev/null")
+            if not out.strip():
+                return False
+
+        if protocol_type is None:
+            return True
+
+        container_name = self._container_name(protocol_type)
+        out, _, _ = self.ssh.run_sudo_command(
+            f"docker exec {container_name} ip -6 route show default 2>/dev/null"
+        )
         if out.strip():
             return True
-        out, _, _ = self.ssh.run_sudo_command("ip -6 addr show scope global 2>/dev/null")
-        return bool(out.strip())
+
+        logger.info(
+            "Host has IPv6 but container %s has no IPv6 default route "
+            "(Docker IPv6 is disabled), keeping the tunnel IPv4-only",
+            container_name,
+        )
+        return False
+
+    def _userspace_guard(self, protocol_type):
+        """Shell snippet forcing userspace for awg3 on a pre-3.1 kernel module."""
+        if self._base_protocol(protocol_type) != self.AWG3:
+            return ''
+        return AWG3_USERSPACE_GUARD
+
+    def _host_awg_module_version(self):
+        """Version of the amneziawg kernel module on the host, or None.
+
+        modinfo covers the module that is installed but not loaded yet: the
+        container loads it implicitly on the first `ip link add`, so it counts.
+        """
+        out, _, _ = self.ssh.run_sudo_command(
+            "cat /sys/module/amneziawg/version 2>/dev/null || "
+            "modinfo -F version amneziawg 2>/dev/null"
+        )
+        version = out.strip().split('\n')[0].strip()
+        return version or None
+
+    @staticmethod
+    def _module_supports_awg3(version):
+        """Whether an amneziawg module version speaks the AWG 3.1 key set."""
+        try:
+            return int(version.split('.')[0]) >= AWG3_MIN_KERNEL_MODULE_MAJOR
+        except (AttributeError, ValueError):
+            return False
+
+    def _verify_interface_up(self, protocol_type):
+        """Fail loudly when the tunnel interface did not survive awg-quick.
+
+        A config the kernel module rejects leaves a running container with no
+        interface at all, which used to be reported to the UI as a successful
+        install (issue #113).
+        """
+        container_name = self._container_name(protocol_type)
+        iface = self._interface_name(protocol_type)
+        _, _, code = self.ssh.run_sudo_command(
+            f"docker exec {container_name} ip link show {iface}"
+        )
+        if code == 0:
+            return
+
+        logs, _, _ = self.ssh.run_sudo_command(
+            f"docker logs --tail 20 {container_name} 2>&1"
+        )
+        raise RuntimeError(
+            f"{iface} is not up in {container_name}: the tunnel config was "
+            f"rejected. Container log:\n{logs.strip()}"
+        )
 
     # ===================== INSTALLATION =====================
 
@@ -485,89 +702,40 @@ fi
             logger.warning(f"prepare_host warning: {err}")
         return True
 
-    # Kernel module version that supports AWG 3.1 features and stays
-    # backward-compatible with AWG 2.0 configs.
-    AWG_MODULE_VERSION = "3.1.20260812"
-    AWG_MODULE_REPO = "https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git"
-
-    def setup_kernel_module(self):
-        """Install the amneziawg kernel module via DKMS (best effort).
-
-        Without the module, awg-quick inside the container falls back to
-        the userspace amneziawg-go implementation, which is noticeably
-        slower under load. The container mounts /lib/modules and has
-        SYS_MODULE capability, so once the module exists on the host,
-        awg-quick picks it automatically on (re)start.
-
-        Skipped (userspace fallback) when:
-        - module already present
-        - Secure Boot is enabled (unsigned module would not load)
-        - kernel headers / build tools cannot be installed
-        - the DKMS build fails (e.g. very old kernels)
-        """
-        v = self.AWG_MODULE_VERSION
-        script = f"""
-set -e
-if modinfo amneziawg >/dev/null 2>&1; then
-    echo "KERNEL_MODULE: already present ($(modinfo amneziawg | awk '/^version:/{{print $2; exit}}'))"
-    exit 0
-fi
-if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'; then
-    echo "KERNEL_MODULE: skipped (Secure Boot enabled)"
-    exit 0
-fi
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq dkms "linux-headers-$(uname -r)" git make gcc
-rm -rf /tmp/awg-module
-git clone --depth 1 --branch v{v} {self.AWG_MODULE_REPO} /tmp/awg-module
-cd /tmp/awg-module/src
-sed -i 's/^PACKAGE_VERSION=.*/PACKAGE_VERSION="{v}"/' dkms.conf
-dkms add .
-dkms build amneziawg/{v}
-dkms install amneziawg/{v}
-modprobe amneziawg
-cd / && rm -rf /tmp/awg-module
-echo "KERNEL_MODULE: installed {v}"
-"""
-        try:
-            out, err, code = self.ssh.run_sudo_script(script, timeout=600)
-            marker = ''
-            for line in (out or '').splitlines():
-                if line.startswith('KERNEL_MODULE:'):
-                    marker = line
-                    logger.info(f"setup_kernel_module: {line}")
-            if code != 0:
-                logger.warning(f"setup_kernel_module failed, userspace fallback: {err}")
-                return 'failed'
-            if 'installed' in marker or 'already present' in marker:
-                return 'ok'
-            return 'skipped'
-        except Exception as err:
-            logger.warning(f"setup_kernel_module warning (userspace fallback): {err}")
-            return 'failed'
-
     def setup_firewall(self):
-        """Setup host firewall (mirrors setup_host_firewall.sh)."""
+        """Setup host firewall (mirrors setup_host_firewall.sh).
+
+        Also raises net.netfilter.nf_conntrack_max: the default on small
+        VMs can be as low as ~7680 entries, and every client flow through
+        the NAT consumes one entry. A full conntrack table makes the
+        kernel silently drop packets ("nf_conntrack: table full"), which
+        users see as random connection freezes. 262144 is a safe value
+        for a VPN gateway; persisted via /etc/sysctl.d.
+        """
         script = """
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
 iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || iptables -A INPUT -p icmp --icmp-type echo-request -j DROP
 iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-USER 2>/dev/null
+if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
+    cur=$(cat /proc/sys/net/netfilter/nf_conntrack_max)
+    if [ "$cur" -lt 262144 ] 2>/dev/null; then
+        printf '%s\n' 'net.netfilter.nf_conntrack_max = 262144' > /etc/sysctl.d/98-awp-conntrack.conf
+        sysctl -w net.netfilter.nf_conntrack_max=262144
+    fi
+fi
 """
         self.ssh.run_sudo_script(script)
         return True
 
     def setup_host_tuning(self):
-        """Enable BBR congestion control and raise conntrack table on the host.
+        """Enable BBR congestion control on the host (with persistence).
 
         BBR is available in all kernels >= 4.9 (any modern Debian/Ubuntu).
         If the tcp_bbr module is not loaded, load it and persist across
         reboots. Falls back silently when the kernel has no BBR support.
-
-        nf_conntrack_max default (often ~7680 on small VMs) is way too low
-        for a VPN NAT gateway: every client flow = 1 conntrack entry, and a
-        full table makes the kernel drop packets. Raise to 262144.
+        BBR significantly outperforms cubic on lossy paths, which VPN
+        tunnels often traverse.
         """
         script = """
 set -e
@@ -582,13 +750,6 @@ if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bb
         > /etc/sysctl.d/99-awp-bbr.conf
     sysctl -w net.core.default_qdisc=fq
     sysctl -w net.ipv4.tcp_congestion_control=bbr
-fi
-if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
-    cur=$(cat /proc/sys/net/netfilter/nf_conntrack_max)
-    if [ "$cur" -lt 262144 ] 2>/dev/null; then
-        printf '%s\\n' 'net.netfilter.nf_conntrack_max = 262144' > /etc/sysctl.d/98-awp-conntrack.conf
-        sysctl -w net.netfilter.nf_conntrack_max=262144
-    fi
 fi
 """
         try:
@@ -608,7 +769,6 @@ echo "HOST_CONNTRACK=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
 echo "HOST_CONNTRACK_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)"
 echo "HOST_BACKLOG=$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)"
 echo "HOST_SOMAXCONN=$(sysctl -n net.core.somaxconn 2>/dev/null)"
-echo "HOST_AWG_MODULE=$(modinfo amneziawg 2>/dev/null | awk '/^version:/{print $2; exit}')"
 for c in $(docker ps -a --format '{{.Names}}' | grep '^amnezia-awg' | sort); do
   echo "CT_NAME=$c"
   if docker ps --format '{{.Names}}' | grep -qx "$c"; then
@@ -640,25 +800,39 @@ done
                 current['ct'][key[4:]] = val
         return info
 
-    def install_protocol(self, protocol_type, port=None, awg_params=None):
+    def install_protocol(self, protocol_type, port=None, awg_params=None,
+                         mtu=None, dns=None, special_junk=None):
         """
         Full installation of AWG or AWG-Legacy protocol.
         Steps: install docker -> prepare host -> build container ->
                configure container -> run container -> setup firewall
+
+        mtu/dns end up in the generated client configs; special_junk is an
+        {'i1': ..., 'i5': ...} mapping overriding the generated I1-I5.
         """
         if port is None:
             port = AWG_DEFAULTS['port']
 
+        base_proto = self._base_protocol(protocol_type)
         if awg_params is None:
-            base_proto = self._base_protocol(protocol_type)
             awg_params = generate_awg_params(
                 # AWG 2.0: ranged H1-H4 ("min-max"). AWG 3.1: fixed 1,2,3,4
                 # per the official docs (custom headers off, Header
                 # Protection hides the message type) - same as the native
                 # AmneziaVPN client generates.
-            use_ranges=(base_proto in (self.AWG, self.AWG2)),
+                use_ranges=(base_proto in (self.AWG, self.AWG2)),
                 awg3=(base_proto == self.AWG3),
             )
+
+        if special_junk is not None:
+            # An explicit mapping replaces the generated set outright, so
+            # clearing I1 in the UI actually clears it.
+            for key in SPECIAL_JUNK_KEYS:
+                awg_params.pop(key, None)
+            awg_params.update(normalize_special_junk(special_junk))
+
+        mtu = str(mtu or AWG_DEFAULTS['mtu']).strip()
+        dns = (dns or '').strip() or self._default_dns()
 
         container_name = self._container_name(protocol_type)
         docker_image = self._docker_image(protocol_type)
@@ -682,16 +856,6 @@ done
         self.prepare_host(protocol_type)
         results.append("Host prepared")
 
-        # Step 2.5: Kernel module (best effort, userspace fallback)
-        results.append("Checking amneziawg kernel module...")
-        km = self.setup_kernel_module()
-        if km == 'ok':
-            results.append("Kernel module ready")
-        elif km == 'skipped':
-            results.append("Kernel module skipped, userspace mode (amneziawg-go)")
-        else:
-            results.append("Kernel module build failed, userspace mode (amneziawg-go)")
-
         # Step 3: Remove old container if exists
         if self.check_protocol_installed(protocol_type):
             results.append("Removing old container...")
@@ -699,6 +863,15 @@ done
             results.append("Old container removed")
 
         # Step 4: Build/Pull container
+        if base_proto == self.AWG3:
+            module_version = self._host_awg_module_version()
+            if module_version and not self._module_supports_awg3(module_version):
+                results.append(
+                    f"! Host amneziawg kernel module {module_version} predates "
+                    f"AWG 3.1, the tunnel will run on userspace amneziawg-go "
+                    f"(slower). Upgrade the module to 3.1+ for the kernel "
+                    f"datapath."
+                )
         results.append("Pulling Docker image...")
         dockerfile_folder = f"/opt/amnezia/{container_name}"
 
@@ -710,6 +883,11 @@ done
             f"\n"
             f"RUN apk add --no-cache bash curl dumb-init iptables\n"
             f"RUN apk --update upgrade --no-cache\n"
+            f"\n"
+            # Only the AWG images ship awg-quick; the legacy one runs wg-quick
+            # against the plain WireGuard module, which has nothing to fall
+            # back to.
+            f"{AWG_QUICK_FORCE_USERSPACE_PATCH if base_proto in (self.AWG, self.AWG2, self.AWG3) else ''}"
             f"\n"
             f"RUN mkdir -p /opt/amnezia\n"
             f'RUN echo "#!/bin/bash" > /opt/amnezia/start.sh && '
@@ -774,7 +952,8 @@ done
 -p {port}:{port}/udp \
 -v /lib/modules:/lib/modules \
 --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
-{ipv6_sysctls}--ulimit nofile=51200:51200 \
+{ipv6_sysctls} --name {container_name} \
+--ulimit nofile=51200:51200 \
 --name {container_name} \
 {container_name}"""
 
@@ -792,17 +971,20 @@ done
 
         # Step 6: Configure container (generate server keys and config)
         results.append("Configuring AWG...")
+        ipv6_enabled = self._detect_server_ipv6(protocol_type)
         results.append(
-            "IPv6 detected on host, enabling dual-stack tunnel"
+            "IPv6 works end-to-end, enabling dual-stack tunnel"
             if ipv6_enabled else
-            "No IPv6 on host, tunnel will be IPv4-only"
+            "No usable IPv6 (host or Docker), tunnel will be IPv4-only"
         )
-        self._configure_container(protocol_type, port, awg_params, ipv6=ipv6_enabled)
+        self._configure_container(protocol_type, port, awg_params, ipv6=ipv6_enabled,
+                                  mtu=mtu, dns=dns)
         results.append("AWG configured")
 
         # Step 7: Upload and run start script
         results.append("Starting AWG service...")
         self._upload_start_script(protocol_type, port, awg_params)
+        self._verify_interface_up(protocol_type)
         results.append("AWG service started")
 
         # Step 8: Setup firewall
@@ -820,6 +1002,8 @@ done
             'protocol': protocol_type,
             'port': port,
             'awg_params': awg_params,
+            'mtu': mtu,
+            'dns': dns,
             'log': results,
         }
 
@@ -848,7 +1032,8 @@ done
             f"(status: {last_status}). Logs:\n{logs_out}"
         )
 
-    def _configure_container(self, protocol_type, port, awg_params, ipv6=False):
+    def _configure_container(self, protocol_type, port, awg_params, ipv6=False,
+                             mtu=None, dns=None):
         """Configure the AWG container (generate keys and server config)."""
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
@@ -863,6 +1048,21 @@ done
             f"{config_key} = {awg_params[param_key]}\n"
             for param_key, config_key in AWG3_PARAM_MAP
             if awg_params.get(param_key)
+        )
+
+        special_junk_lines = ''.join(
+            f"{param_key.upper()} = {awg_params[param_key]}\n"
+            for param_key in SPECIAL_JUNK_KEYS
+            if awg_params.get(param_key)
+        )
+
+        # MTU and DNS belong to the generated client configs, not to the
+        # server interface, so they are stored as comments: awg-quick would
+        # otherwise resize the server tunnel and call resolvconf, which the
+        # container does not have. _get_mtu/_get_dns read them back.
+        client_defaults_lines = (
+            f"# MTU = {mtu or AWG_DEFAULTS['mtu']}\n"
+            f"# DNS = {dns or self._default_dns()}\n"
         )
 
         address_line = f"{subnet_ip}/{subnet_cidr}"
@@ -899,14 +1099,7 @@ H1 = {awg_params['init_packet_magic_header']}
 H2 = {awg_params['response_packet_magic_header']}
 H3 = {awg_params['underload_packet_magic_header']}
 H4 = {awg_params['transport_packet_magic_header']}
-{awg3_config_lines}# Signature Chain parameters (AWG 2.0+)
-# I1 = 0
-# I2 = 0
-# I3 = 0
-# I4 = 0
-# I5 = 0
-# CPS = signature
-EOF
+{special_junk_lines}{awg3_config_lines}{client_defaults_lines}EOF
 """
         else:
             # AWG Legacy uses wg commands
@@ -936,7 +1129,7 @@ H1 = {awg_params['init_packet_magic_header']}
 H2 = {awg_params['response_packet_magic_header']}
 H3 = {awg_params['underload_packet_magic_header']}
 H4 = {awg_params['transport_packet_magic_header']}
-EOF
+{client_defaults_lines}EOF
 """
 
         out, err, code = self.ssh.run_sudo_command(
@@ -950,6 +1143,7 @@ EOF
         container_name = self._container_name(protocol_type)
         quick_bin = self._quick_binary(protocol_type)
         config_path = self._config_path(protocol_type)
+        userspace_guard = self._userspace_guard(protocol_type)
 
         start_script = f"""#!/bin/bash
 echo "Container startup"
@@ -965,7 +1159,7 @@ fi
 
 # IPv6 subnet, if the tunnel is dual-stack (second part of the Address line)
 SUBNET6=$(grep '^Address' {config_path} | head -1 | tr ',' '\n' | grep ':' | sed 's/^[^=]*=//' | tr -d ' ' | head -1)
-
+{userspace_guard}
 # kill daemons in case of restart
 {quick_bin} down {config_path} 2>/dev/null
 
@@ -1220,6 +1414,7 @@ done < "$BW"
 
         # Regenerate start script so iptables rules pick up the (possibly changed) subnet
         quick_bin = self._quick_binary(protocol_type)
+        userspace_guard = self._userspace_guard(protocol_type)
         start_script = f"""#!/bin/bash
 echo "Container startup"
 
@@ -1234,7 +1429,7 @@ fi
 
 # IPv6 subnet, if the tunnel is dual-stack (second part of the Address line)
 SUBNET6=$(grep '^Address' {config_path} | head -1 | tr ',' '\n' | grep ':' | sed 's/^[^=]*=//' | tr -d ' ' | head -1)
-
+{userspace_guard}
 # kill daemons in case of restart
 {quick_bin} down {config_path} 2>/dev/null
 
@@ -1588,23 +1783,20 @@ tail -f /dev/null
             subnet_ip = self._get_subnet_ip(protocol_type)
             cidr = int(self._get_subnet_cidr(protocol_type))
             network = ipaddress.ip_network(f'{subnet_ip}/{cidr}', strict=False)
-        except Exception as e:
-            logger.info(f"conn monitor dbg {self.ssh.host} {protocol_type}: subnet failed: {e}")
+        except Exception:
             return {}
 
         container = self._container_name(protocol_type)
         # tr/grep/cut pipeline instead of awk: the command travels through a
-        # double remote shell (ssh + sh -c "..."), which reliably mangled
-        # awk's $i fields no matter how they were escaped. Each conntrack
-        # line has two src= tokens (peer + external); the subnet filter
-        # below keeps only peer IPs, so counts match the awk version.
+        # double remote shell (ssh + sh -c "..."), which mangles awk's $i
+        # fields no matter how they are escaped. Each conntrack line has two
+        # src= tokens (peer + external); the subnet filter below keeps only
+        # peer IPs, so counts match the awk version.
         count_cmd = ("tr ' ' '\\n' < /proc/net/nf_conntrack 2>/dev/null "
                      "| grep '^src=' | cut -d= -f2 | sort | uniq -c")
         out, err, code = self.ssh.run_sudo_command(
             f'docker exec -i {container} sh -c "{count_cmd}"'
         )
-        logger.info(f"conn monitor dbg {self.ssh.host} {protocol_type}: "
-                    f"code={code} out={out[:150]!r} err={err[:80]!r}")
         if code != 0 or not out.strip():
             return {}
 
@@ -1657,8 +1849,6 @@ tail -f /dev/null
         detection runs 24/7 even when nobody has the UI open.
         """
         counts = self._count_connections_by_ip(protocol_type)
-        logger.info(f"conn monitor: {self.ssh.host} {protocol_type}: "
-                    f"counts={counts if counts else 'EMPTY'}")
         if not counts:
             return False
         try:
@@ -1840,8 +2030,7 @@ AllowedIPs = {allowed_ips}
             port = awg_params['port']
 
         dns = self._get_dns(protocol_type)
-
-        mtu = AWG_DEFAULTS['mtu']
+        mtu = self._get_mtu(protocol_type)
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
@@ -1882,12 +2071,17 @@ AllowedIPs = {allowed_ips}
                     continue
                 config_lines.append(f"{config_key} = {val}")
 
+        # Route ::/0 only when the client actually holds an IPv6 address:
+        # claiming the IPv6 default route on an IPv4-only tunnel blackholes
+        # the client's own native IPv6.
+        peer_allowed_ips = "0.0.0.0/0, ::/0" if client_ipv6 else "0.0.0.0/0"
+
         client_config = "[Interface]\n" + "\n".join(config_lines) + f"""
 
 [Peer]
 PublicKey = {server_pub_key}
 PresharedKey = {psk}
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = {peer_allowed_ips}
 Endpoint = {server_host}:{port}
 PersistentKeepalive = 25
 """
@@ -1932,8 +2126,7 @@ PersistentKeepalive = 25
             port = awg_params['port']
 
         dns = self._get_dns(protocol_type, ud)
-
-        mtu = AWG_DEFAULTS['mtu']
+        mtu = self._get_mtu(protocol_type, ud)
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
@@ -1974,12 +2167,15 @@ PersistentKeepalive = 25
                     continue
                 config_lines.append(f"{config_key} = {val}")
 
+        # See the client-creation path: ::/0 only on dual-stack tunnels.
+        peer_allowed_ips = "0.0.0.0/0, ::/0" if client_ipv6 else "0.0.0.0/0"
+
         config = "[Interface]\n" + "\n".join(config_lines) + f"""
 
 [Peer]
 PublicKey = {server_pub_key}
 PresharedKey = {psk}
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = {peer_allowed_ips}
 Endpoint = {server_host}:{port}
 PersistentKeepalive = 25
 """
@@ -2144,6 +2340,44 @@ AllowedIPs = {allowed_ips}
 
         return True
 
+    def _default_dns(self):
+        """Fallback DNS pair: the AmneziaDNS container when it is installed,
+        otherwise the built-in resolvers."""
+        dns1 = AWG_DEFAULTS['dns1']
+        dns2 = AWG_DEFAULTS['dns2']
+        try:
+            out, _, _ = self.ssh.run_sudo_command(
+                "docker ps -a --filter name=^amnezia-dns$ --format '{{.Names}}'"
+            )
+            if 'amnezia-dns' in out:
+                dns1 = '172.29.172.254'
+        except Exception:
+            pass
+        return f"{dns1}, {dns2}"
+
+    def _read_config_key(self, protocol_type, key):
+        """Read a key from the server config, comment or not.
+
+        MTU and DNS are stored commented out on purpose (see
+        _configure_container), so both forms have to be accepted.
+        """
+        try:
+            server_config = self._get_server_config(protocol_type)
+        except Exception:
+            return None
+        for line in server_config.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                stripped = stripped.lstrip('#').strip()
+            if '=' not in stripped:
+                continue
+            name, _, value = stripped.partition('=')
+            if name.strip() == key:
+                value = value.strip()
+                if value:
+                    return value
+        return None
+
     def _get_dns(self, protocol_type, user_data=None):
         """DNS servers for generated client configs.
 
@@ -2154,28 +2388,140 @@ AllowedIPs = {allowed_ips}
         """
         if user_data and user_data.get('dns'):
             return user_data['dns']
-        try:
-            server_config = self._get_server_config(protocol_type)
-            for line in server_config.split('\n'):
-                stripped = line.strip()
-                if stripped.startswith('#'):
-                    stripped = stripped.lstrip('#').strip()
-                if stripped.startswith('DNS') and '=' in stripped:
-                    return stripped.split('=', 1)[1].strip()
-        except Exception:
-            pass
-        dns1 = AWG_DEFAULTS['dns1']
-        dns2 = AWG_DEFAULTS['dns2']
-        out, _, _ = self.ssh.run_sudo_command("docker ps -a --filter name=^amnezia-dns$ --format '{{.Names}}'")
-        if 'amnezia-dns' in out:
-            dns1 = '172.29.172.254'
-        return f"{dns1}, {dns2}"
+        return self._read_config_key(protocol_type, 'DNS') or self._default_dns()
+
+    def get_awg_settings(self, protocol_type):
+        """Client-facing AWG settings currently stored in the server config."""
+        params = self._get_awg_params_from_config(protocol_type)
+        settings = {
+            'mtu': self._get_mtu(protocol_type),
+            'dns': self._get_dns(protocol_type),
+            'default_i1': AWG_DEFAULT_I1,
+            'supports_special_junk': self._base_protocol(protocol_type) != self.AWG_LEGACY,
+        }
+        for key in SPECIAL_JUNK_KEYS:
+            settings[key] = params.get(key, '')
+        return settings
+
+    def update_awg_settings(self, protocol_type, mtu=None, dns=None, special_junk=None):
+        """Rewrite MTU/DNS/I1-I5 in the server config and apply them live.
+
+        I1-I5 go to the kernel through `awg syncconf`, so peers stay up; MTU
+        and DNS only matter when a client config is generated. Existing
+        clients pick the new values up on their next config export -- the
+        config they already imported keeps the old ones.
+        """
+        if self._base_protocol(protocol_type) == self.AWG_LEGACY:
+            special_junk = None
+        junk = normalize_special_junk(special_junk) if special_junk is not None else None
+
+        current_junk = self._get_awg_params_from_config(protocol_type)
+        config = self._get_server_config(protocol_type)
+        lines = config.split('\n')
+
+        def key_of(line):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                stripped = stripped.lstrip('#').strip()
+            if '=' not in stripped:
+                return None
+            return stripped.partition('=')[0].strip()
+
+        # A None means "leave this alone"; an empty string means "clear it",
+        # which drops the line so the built-in default applies again.
+        replaced = {}
+        if mtu is not None:
+            value = str(mtu).strip()
+            replaced['MTU'] = f"# MTU = {value}" if value else None
+        if dns is not None:
+            value = str(dns).strip()
+            replaced['DNS'] = f"# DNS = {value}" if value else None
+        if junk is not None:
+            for key in SPECIAL_JUNK_KEYS:
+                value = junk.get(key)
+                replaced[key.upper()] = f"{key.upper()} = {value}" if value else None
+
+        # Everything lives in [Interface]; drop the old occurrences first so a
+        # cleared field really disappears instead of being shadowed.
+        interface_end = len(lines)
+        for idx, line in enumerate(lines):
+            if idx and line.strip().startswith('['):
+                interface_end = idx
+                break
+
+        head = [line for line in lines[:interface_end] if key_of(line) not in replaced]
+        while head and not head[-1].strip():
+            head.pop()
+        head.extend(value for value in replaced.values() if value)
+
+        tail = lines[interface_end:]
+        if tail:
+            head.append('')  # keep [Interface] and [Peer] visually apart
+        self._write_server_config(protocol_type, '\n'.join(head + tail))
+
+        if junk is not None:
+            # There is no way to spell an empty I1-I5 in a config file
+            # (get_value in amneziawg-tools rejects `I1 =`), so a dropped
+            # packet cannot be pushed through syncconf -- the kernel would
+            # keep sending the old one. Recreating the interface is the only
+            # way to make a removal take effect.
+            dropped = any(current_junk.get(key) and not junk.get(key)
+                          for key in SPECIAL_JUNK_KEYS)
+            if dropped:
+                self._restart_container(protocol_type)
+            else:
+                self._sync_server_config(protocol_type)
+        return self.get_awg_settings(protocol_type)
+
+    def _write_server_config(self, protocol_type, config_content):
+        """Upload the server config into the container without restarting it."""
+        container_name = self._container_name(protocol_type)
+        config_path = self._resolve_config_path(protocol_type)
+        self.ssh.upload_file(config_content.replace('\r\n', '\n'), "/tmp/_amnz_settings.conf")
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker cp /tmp/_amnz_settings.conf {container_name}:{config_path}"
+        )
+        self.ssh.run_command("rm -f /tmp/_amnz_settings.conf")
+        if code != 0:
+            raise RuntimeError(f"Failed to write server config: {err or out}")
+
+    def _restart_container(self, protocol_type):
+        """Restart the container so its start script recreates the interface."""
+        container_name = self._container_name(protocol_type)
+        out, err, code = self.ssh.run_sudo_command(f"docker restart {container_name}")
+        if code != 0:
+            raise RuntimeError(f"Failed to restart {container_name}: {err or out}")
+
+    def _sync_server_config(self, protocol_type):
+        """Apply the on-disk server config to the running interface."""
+        container_name = self._container_name(protocol_type)
+        wg_bin = self._wg_binary(protocol_type)
+        quick_bin = self._quick_binary(protocol_type)
+        config_path = self._resolve_config_path(protocol_type)
+        iface = self._interface_name(protocol_type, config_path)
+        out, err, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} bash -c "
+            f"'{wg_bin} syncconf {iface} <({quick_bin} strip {config_path})'"
+        )
+        if code != 0:
+            raise RuntimeError(f"Failed to apply config: {err or out}")
+
+    def _get_mtu(self, protocol_type, user_data=None):
+        """MTU for generated client configs.
+
+        Priority: per-client override > `MTU = ...` line in the server config
+        > built-in default. Amnezia's own clients use 1376; the 1280 this
+        panel used to hardcode is itself a usable fingerprint.
+        """
+        if user_data and user_data.get('mtu'):
+            return str(user_data['mtu'])
+        return self._read_config_key(protocol_type, 'MTU') or AWG_DEFAULTS['mtu']
 
     def save_client_config(self, protocol_type, client_id, config_text):
         """Persist a manually edited client config. Stored verbatim in
         clientsTable (userData.customConfig) and returned by get_client_config
-        from now on; the DNS line is indexed into userData.dns as the
-        per-client override for future regenerations."""
+        from now on; the DNS and MTU lines are indexed into userData as the
+        per-client overrides _get_dns/_get_mtu read on future regenerations."""
         config_text = (config_text or '').strip()
         if not config_text:
             raise RuntimeError('Config is empty')
@@ -2186,11 +2532,16 @@ AllowedIPs = {allowed_ips}
         ud = client.setdefault('userData', {})
         ud['customConfig'] = config_text
         ud.pop('dns', None)
+        ud.pop('mtu', None)
+        indexed = {'DNS': 'dns', 'MTU': 'mtu'}
         for line in config_text.split('\n'):
             stripped = line.strip()
-            if stripped.startswith('DNS') and '=' in stripped:
-                ud['dns'] = stripped.split('=', 1)[1].strip()
-                break
+            if stripped.startswith('#') or '=' not in stripped:
+                continue
+            name, _, value = stripped.partition('=')
+            field = indexed.get(name.strip())
+            if field and value.strip():
+                ud[field] = value.strip()
         self._save_clients_table(protocol_type, clients_table)
         return {'status': 'success'}
 

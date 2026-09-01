@@ -186,13 +186,11 @@
          applyInstalledAppsVisibility(); a protocol without one is shown in the
          marketplace but never gets a tile here. -->
     <div class="card card-hover protocol-card protocol-awg" id="proto-awg3">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🛡</div>
-            <div class="flex gap-sm" id="awg3-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">AmneziaWG 3.1 <span style="font-size:0.65rem; background:var(--accent); color:#fff; padding:2px 6px; border-radius:8px; vertical-align:middle;">NEW</span></div>
         </div>
-        <div class="protocol-name">AmneziaWG 3.1 <span
-                style="font-size:0.65rem; background:var(--accent); color:#fff; padding:2px 6px; border-radius:8px; vertical-align:middle;">NEW</span>
-        </div>
+        <div class="flex gap-sm protocol-ctrl" id="awg3-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('awg3_desc') }}
         </div>
@@ -212,11 +210,11 @@
 
     <!-- AWG2 Card -->
     <div class="card card-hover protocol-card protocol-awg" id="proto-awg2">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">✨</div>
-            <div class="flex gap-sm" id="awg2-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">AmneziaWG 2.0</div>
         </div>
-        <div class="protocol-name">AmneziaWG 2.0</div>
+        <div class="flex gap-sm protocol-ctrl" id="awg2-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('awg_desc') }}
         </div>
@@ -236,11 +234,11 @@
 
     <!-- AWG Card -->
     <div class="card card-hover protocol-card protocol-awg" id="proto-awg">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🔮</div>
-            <div class="flex gap-sm" id="awg-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">AmneziaWG</div>
         </div>
-        <div class="protocol-name">AmneziaWG</div>
+        <div class="flex gap-sm protocol-ctrl" id="awg-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('awg_desc') }}
         </div>
@@ -260,11 +258,11 @@
 
     <!-- AWG Legacy Card -->
     <div class="card card-hover protocol-card protocol-legacy" id="proto-awg-legacy">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">📡</div>
-            <div class="flex gap-sm" id="awg-legacy-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">AmneziaWG Legacy</div>
         </div>
-        <div class="protocol-name">AmneziaWG Legacy</div>
+        <div class="flex gap-sm protocol-ctrl" id="awg-legacy-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('awg_legacy_desc') }}
         </div>
@@ -284,11 +282,11 @@
 
     <!-- Xray Card -->
     <div class="card card-hover protocol-card protocol-xray" id="proto-xray">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">⚡</div>
-            <div class="flex gap-sm" id="xray-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">Xray (VLESS-Reality)</div>
         </div>
-        <div class="protocol-name">Xray (VLESS-Reality)</div>
+        <div class="flex gap-sm protocol-ctrl" id="xray-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('xray_desc') }}
         </div>
@@ -308,11 +306,11 @@
 
     <!-- Telemt Card -->
     <div class="card card-hover protocol-card protocol-telemt" id="proto-telemt">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">✈</div>
-            <div class="flex gap-sm" id="telemt-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">Telemt (Telegram Proxy)</div>
         </div>
-        <div class="protocol-name">Telemt (Telegram Proxy)</div>
+        <div class="flex gap-sm protocol-ctrl" id="telemt-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('telemt_desc') }}
         </div>
@@ -332,11 +330,11 @@
 
     <!-- WireGuard Card -->
     <div class="card card-hover protocol-card protocol-wireguard" id="proto-wireguard">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🔒</div>
-            <div class="flex gap-sm" id="wireguard-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">WireGuard</div>
         </div>
-        <div class="protocol-name">WireGuard</div>
+        <div class="flex gap-sm protocol-ctrl" id="wireguard-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('wireguard_desc') }}
         </div>
@@ -376,11 +374,11 @@
 
     <!-- DNS Card -->
     <div class="card card-hover protocol-card protocol-dns" id="proto-dns">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🔍</div>
-            <div class="flex gap-sm" id="dns-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">AmneziaDNS</div>
         </div>
-        <div class="protocol-name">AmneziaDNS</div>
+        <div class="flex gap-sm protocol-ctrl" id="dns-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('dns_desc') }}
         </div>
@@ -400,11 +398,11 @@
 
     <!-- AdGuard Home Card -->
     <div class="card card-hover protocol-card protocol-adguard" id="proto-adguard">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🛡️</div>
-            <div class="flex gap-sm" id="adguard-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">AdGuard Home</div>
         </div>
-        <div class="protocol-name">AdGuard Home</div>
+        <div class="flex gap-sm protocol-ctrl" id="adguard-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('adguard_desc') }}
         </div>
@@ -424,11 +422,11 @@
 
     <!-- SOCKS5 Card -->
     <div class="card card-hover protocol-card protocol-socks5" id="proto-socks5">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🧦</div>
-            <div class="flex gap-sm" id="socks5-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">SOCKS5 Proxy</div>
         </div>
-        <div class="protocol-name">SOCKS5 Proxy</div>
+        <div class="flex gap-sm protocol-ctrl" id="socks5-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('socks5_desc') }}
         </div>
@@ -449,11 +447,11 @@
 
     <!-- NGINX Card -->
     <div class="card card-hover protocol-card protocol-nginx" id="proto-nginx">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-sm);">
+        <div class="protocol-card-head">
             <div class="protocol-icon">🌐</div>
-            <div class="flex gap-sm" id="nginx-ctrl" style="display:none!important;"></div>
+            <div class="protocol-name">NGINX</div>
         </div>
-        <div class="protocol-name">NGINX</div>
+        <div class="flex gap-sm protocol-ctrl" id="nginx-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
             {{ _('nginx_desc') }}
         </div>
@@ -593,6 +591,41 @@
                 <div class="form-hint" id="installPortHint">{{ _('port_default_hint') }}</div>
             </div>
 
+            <div id="awgOptions"
+                style="display:none; padding: var(--space-md); background: rgba(0,0,0,0.03); border-radius: var(--radius-md); margin-bottom: var(--space-md);">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">{{ _('awg_mtu') }}</label>
+                        <input class="form-input" type="number" id="installAwgMtu" value="1376" min="576" max="65535">
+                        <div class="form-hint">{{ _('awg_mtu_hint') }}</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">DNS 1</label>
+                        <input class="form-input" type="text" id="installAwgDns1" value="1.1.1.1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">DNS 2</label>
+                        <input class="form-input" type="text" id="installAwgDns2" value="1.0.0.1">
+                    </div>
+                </div>
+                <div id="installAwgJunk">
+                    <div class="form-group">
+                        <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
+                            {{ _('awg_special_junk') }}
+                            <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="resetSpecialJunkFields('installAwg')">{{ _('awg_special_junk_reset') }}</button>
+                        </label>
+                        <div class="form-hint" style="margin-bottom:var(--space-xs);">{{ _('awg_special_junk_hint') }}</div>
+                        <input class="form-input" type="text" id="installAwgI1" spellcheck="false" placeholder="I1">
+                        <input class="form-input mt-xs" type="text" id="installAwgI2" spellcheck="false" placeholder="I2">
+                        <input class="form-input mt-xs" type="text" id="installAwgI3" spellcheck="false" placeholder="I3">
+                        <input class="form-input mt-xs" type="text" id="installAwgI4" spellcheck="false" placeholder="I4">
+                        <input class="form-input mt-xs" type="text" id="installAwgI5" spellcheck="false" placeholder="I5">
+                        <div class="form-hint">{{ _('awg_special_junk_syntax') }}</div>
+                    </div>
+                </div>
+            </div>
+
             <div id="telemtOptions"
                 style="display:none; padding: var(--space-md); background: rgba(0,0,0,0.03); border-radius: var(--radius-md); margin-bottom: var(--space-md);">
                 <div class="form-group">
@@ -716,6 +749,53 @@
     </div>
 </div>
 
+<!-- ===== AmneziaWG Settings Modal ===== -->
+<div class="modal-backdrop" id="awgSettingsModal">
+    <div class="modal" style="max-width:640px;">
+        <div class="modal-header">
+            <h2 class="modal-title" id="awgSettingsTitle">{{ _('awg_settings_title') }}</h2>
+            <button class="modal-close" onclick="closeModal('awgSettingsModal')">×</button>
+        </div>
+        <div class="form-hint" style="margin-bottom:var(--space-md);">{{ _('awg_settings_desc') }}</div>
+        <div class="form-row">
+            <div class="form-group">
+                <label class="form-label">{{ _('awg_mtu') }}</label>
+                <input class="form-input" type="number" id="awgSetMtu" min="576" max="65535">
+                <div class="form-hint">{{ _('awg_mtu_hint') }}</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">DNS 1</label>
+                <input class="form-input" type="text" id="awgSetDns1">
+            </div>
+            <div class="form-group">
+                <label class="form-label">DNS 2</label>
+                <input class="form-input" type="text" id="awgSetDns2">
+            </div>
+        </div>
+        <div class="form-group" id="awgSetJunkGroup">
+            <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
+                {{ _('awg_special_junk') }}
+                <button type="button" class="btn btn-secondary btn-sm"
+                    onclick="resetSpecialJunkFields('awgSet')">{{ _('awg_special_junk_reset') }}</button>
+            </label>
+            <div class="form-hint" style="margin-bottom:var(--space-xs);">{{ _('awg_special_junk_hint') }}</div>
+            <input class="form-input" type="text" id="awgSetI1" spellcheck="false" placeholder="I1">
+            <input class="form-input mt-xs" type="text" id="awgSetI2" spellcheck="false" placeholder="I2">
+            <input class="form-input mt-xs" type="text" id="awgSetI3" spellcheck="false" placeholder="I3">
+            <input class="form-input mt-xs" type="text" id="awgSetI4" spellcheck="false" placeholder="I4">
+            <input class="form-input mt-xs" type="text" id="awgSetI5" spellcheck="false" placeholder="I5">
+            <div class="form-hint">{{ _('awg_special_junk_syntax') }}</div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('awgSettingsModal')">{{ _('cancel') }}</button>
+            <button class="btn btn-primary" onclick="saveAwgSettings()" id="awgSaveBtn">
+                <span id="awgSaveBtnText">{{ _('save') }}</span>
+                <div class="spinner hidden" id="awgSaveSpinner"></div>
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- ===== SOCKS5 Settings Modal ===== -->
 <div class="modal-backdrop" id="socks5SettingsModal">
     <div class="modal">
@@ -820,7 +900,9 @@
 
         <div class="form-group">
             <label class="form-label">{{ _('assign_to_user') }}</label>
-            <select class="form-select" id="connectionUserId">
+            <select class="form-select" id="connectionUserId" data-searchable
+                data-search-placeholder="{{ _('select_search_placeholder') }}"
+                data-search-empty="{{ _('select_search_empty') }}">
                 <option value="">{{ _('no_assign') }}</option>
                 {% for u in users %}
                 <option value="{{ u.id }}">{{ u.username }} ({{ u.role }})</option>
@@ -917,8 +999,15 @@
         <!-- QR Code Panel -->
         <div class="config-panel" id="panel-qr">
             <div class="qr-container">
+                <div class="qr-format hidden" id="qrFormat">
+                    <button type="button" class="qr-format-btn active" data-fmt="amnezia"
+                        onclick="setQrFormat('amnezia')">{{ _('qr_format_amnezia') }}</button>
+                    <button type="button" class="qr-format-btn" data-fmt="wireguard"
+                        onclick="setQrFormat('wireguard')">{{ _('qr_format_wireguard') }}</button>
+                </div>
                 <div id="qrCode"></div>
                 <div class="qr-hint">{{ _('qr_hint') }}</div>
+                <div class="qr-hint" id="qrFormatHint"></div>
             </div>
         </div>
     </div>
@@ -1006,6 +1095,25 @@
     let currentProtocolStatus = {};
     let installedAppsLoading = true;
     let currentSocks5Proto = 'socks5';
+    let currentAwgProto = 'awg2';
+
+    const AWG_PROTOCOLS = ['awg', 'awg2', 'awg3', 'awg_legacy'];
+    const SPECIAL_JUNK_KEYS = ['i1', 'i2', 'i3', 'i4', 'i5'];
+    // Same value the desktop client ships as its default I1.
+    const AWG_DEFAULT_I1 = '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>';
+
+    // The install form and the settings modal name their inputs differently
+    // (installAwgI1 vs awgSetI1), so callers pass the whole id prefix.
+    function specialJunkField(prefix, key) {
+        return document.getElementById(prefix + key.toUpperCase());
+    }
+
+    function resetSpecialJunkFields(prefix) {
+        SPECIAL_JUNK_KEYS.forEach((key, idx) => {
+            const el = specialJunkField(prefix, key);
+            if (el) el.value = idx === 0 ? AWG_DEFAULT_I1 : '';
+        });
+    }
 
     function protoBase(proto) {
         return String(proto || 'awg').split('__')[0];
@@ -1632,7 +1740,11 @@
                         <button class="btn btn-danger btn-sm" onclick="toggleContainer('${proto}', true)" title="${_('stop_container_confirm').replace('{}', '')}">${_('stop_btn')}</button>
                     `;
                 } else {
+                    const awgBtn = AWG_PROTOCOLS.includes(protoBase(proto))
+                        ? `<button class="btn btn-secondary btn-sm" onclick="openAwgSettings('${proto}')" title="${_('awg_settings_title')}">${_('awg_settings_btn')}</button>`
+                        : '';
                     ctrlEl.innerHTML = `
+                        ${awgBtn}
                         <button class="btn btn-secondary btn-sm" onclick="showServerConfig('${proto}')" title="${_('server_config')}">${_('config_btn')}</button>
                         <button class="btn btn-danger btn-sm" onclick="toggleContainer('${proto}', true)" title="${_('stop_container_confirm').replace('{}', '')}">${_('stop_btn')}</button>
                     `;
@@ -1744,7 +1856,6 @@
         html += row('conntrack', `${h.conntrack_count || 0} / ${h.conntrack || '—'}`);
         html += row('netdev_max_backlog', h.netdev_max_backlog);
         html += row('somaxconn', h.somaxconn);
-        html += row('amneziawg module', h.awg_module ? `kernel v${h.awg_module}` : 'userspace (amneziawg-go)');
         for (const c of (t.containers || [])) {
             html += `<div style="font-weight:600;margin:12px 0 2px;">🐳 ${esc(c.name)} ${c.running ? '<span style="color:var(--success,#3fb950)">● online</span>' : '<span style="color:var(--danger,#f85149)">● stopped</span>'}</div>`;
             if (c.running && c.ct) {
@@ -1754,7 +1865,7 @@
                 html += row('nofile (ulimit -n)', c.ct['nofile']);
             }
         }
-        if (!(t.containers || []).length) html += `<div style="opacity:.6;margin-top:8px;">Нет AWG-контейнеров</div>`;
+        if (!(t.containers || []).length) html += `<div style="opacity:.6;margin-top:8px;">No AWG containers</div>`;
         el.innerHTML = html;
     }
 
@@ -1858,11 +1969,13 @@
         const socks5Opts = document.getElementById('socks5Options');
         const adguardOpts = document.getElementById('adguardOptions');
         const nginxOpts = document.getElementById('nginxOptions');
+        const awgOpts = document.getElementById('awgOptions');
 
         telemtOpts.style.display = 'none';
         socks5Opts.style.display = 'none';
         adguardOpts.style.display = 'none';
         nginxOpts.style.display = 'none';
+        awgOpts.style.display = 'none';
 
         if (base === 'dns') {
             portLabel.textContent = _('port') + ' (Internal)';
@@ -1904,6 +2017,13 @@
             portInput.value = currentInstallAnother ? nextSuggestedPort(currentInstallProto, 55424) : '55424';
             portInput.disabled = false;
             portHint.textContent = currentInstallAnother ? _('port_next_instance_hint') : _('port_default_hint');
+            awgOpts.style.display = 'block';
+            // AWG Legacy predates the special junk packets, only MTU/DNS apply.
+            document.getElementById('installAwgJunk').style.display = base === 'awg_legacy' ? 'none' : '';
+            document.getElementById('installAwgMtu').value = '1376';
+            document.getElementById('installAwgDns1').value = '1.1.1.1';
+            document.getElementById('installAwgDns2').value = '1.0.0.1';
+            resetSpecialJunkFields('installAwg');
         }
 
         document.getElementById('installForm').classList.remove('hidden');
@@ -1978,13 +2098,26 @@
             } else if (protoBase(currentInstallProto) === 'nginx') {
                 params.nginx_domain = document.getElementById('installNginxDomain').value.trim();
                 params.nginx_email = document.getElementById('installNginxEmail').value.trim();
+            } else if (AWG_PROTOCOLS.includes(protoBase(currentInstallProto))) {
+                params.awg_mtu = document.getElementById('installAwgMtu').value.trim();
+                params.awg_dns1 = document.getElementById('installAwgDns1').value.trim();
+                params.awg_dns2 = document.getElementById('installAwgDns2').value.trim();
+                if (protoBase(currentInstallProto) !== 'awg_legacy') {
+                    ['i1', 'i2', 'i3', 'i4', 'i5'].forEach(key => {
+                        params['awg_' + key] = specialJunkField('installAwg', key).value.trim();
+                    });
+                }
             }
             const result = await apiCall(`/api/servers/${SERVER_ID}/install`, 'POST', params);
             clearInterval(progressInterval);
             fillEl.style.width = '100%';
             if (result.log) {
                 result.log.forEach(line => {
-                    logEl.innerHTML += `<div class="log-line success">✓ ${line}</div>`;
+                    // Installers mark a line that succeeded with a caveat by
+                    // prefixing it with "!" - a green tick would hide it.
+                    logEl.innerHTML += line.startsWith('!')
+                        ? `<div class="log-line warning">⚠ ${line.slice(1).trim()}</div>`
+                        : `<div class="log-line success">✓ ${line}</div>`;
                 });
             }
             logEl.scrollTop = logEl.scrollHeight;
@@ -2108,6 +2241,57 @@
     }
 
     // ========== SOCKS5 Settings ==========
+    async function openAwgSettings(proto) {
+        currentAwgProto = proto;
+        try {
+            const data = await apiCall(`/api/servers/${SERVER_ID}/awg/settings`, 'POST', { protocol: proto });
+            document.getElementById('awgSettingsTitle').textContent = `${_('awg_settings_title')} — ${getProtoTitle(proto)}`;
+            document.getElementById('awgSetMtu').value = data.mtu || '1376';
+            document.getElementById('awgSetDns1').value = data.dns1 || '';
+            document.getElementById('awgSetDns2').value = data.dns2 || '';
+            const junkGroup = document.getElementById('awgSetJunkGroup');
+            junkGroup.style.display = data.supports_special_junk ? '' : 'none';
+            SPECIAL_JUNK_KEYS.forEach(key => {
+                const el = specialJunkField('awgSet', key);
+                if (el) el.value = data[key] || '';
+            });
+            openModal('awgSettingsModal');
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        }
+    }
+
+    async function saveAwgSettings() {
+        const btn = document.getElementById('awgSaveBtn');
+        const text = document.getElementById('awgSaveBtnText');
+        const spinner = document.getElementById('awgSaveSpinner');
+        const payload = {
+            protocol: currentAwgProto,
+            mtu: document.getElementById('awgSetMtu').value.trim(),
+            dns1: document.getElementById('awgSetDns1').value.trim(),
+            dns2: document.getElementById('awgSetDns2').value.trim(),
+        };
+        if (document.getElementById('awgSetJunkGroup').style.display !== 'none') {
+            SPECIAL_JUNK_KEYS.forEach(key => {
+                payload[key] = specialJunkField('awgSet', key).value.trim();
+            });
+        }
+        btn.disabled = true;
+        text.textContent = _('saving') || 'Saving...';
+        spinner.classList.remove('hidden');
+        try {
+            await apiCall(`/api/servers/${SERVER_ID}/awg/settings/save`, 'POST', payload);
+            showToast(_('awg_settings_saved'), 'success');
+            closeModal('awgSettingsModal');
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            text.textContent = _('save');
+            spinner.classList.add('hidden');
+        }
+    }
+
     async function openSocks5Settings(proto = 'socks5') {
         currentSocks5Proto = proto || 'socks5';
         try {
@@ -2208,17 +2392,13 @@
                 const assignedUser = client.assigned_user || '';
                 client._online = false; // reset each render; set by the handshake badge below
 
+                // Peer internal IP shown next to the name
+                const peerIp = userData.clientIp || (userData.allowedIps || '').match(/(\d+\.\d+\.\d+\.\d+)/)?.[1] || '';
+                const ipHtml = peerIp ? ` <span class="client-ip">${escapeHtml(peerIp)}</span>` : '';
+
                 let metaHtml = '';
                 if (assignedUser) metaHtml += `<span class="badge badge-info" style="font-size:0.65rem;">👤 ${escapeHtml(assignedUser)}</span>`;
                 if (created) metaHtml += `<span>📅 ${formatDate(created)}</span>`;
-
-                // Peer internal IP shown next to the name
-                const peerIp = userData.clientIp || ((userData.allowedIps || '').match(/(\d+\.\d+\.\d+\.\d+)/) || [])[1] || '';
-                const ipHtml = peerIp ? ` <span class="client-ip">${escapeHtml(peerIp)}</span>` : '';
-
-                // Per-peer bandwidth limit badge (AWG): ∞ by default, ⚡X Mbps when set
-                const maxSpeed = parseFloat(userData.maxSpeed || 0) || 0;
-                if (proto.startsWith('awg')) metaHtml += `<span class="traffic-badge" title="${_('max_speed')}">⚡${maxSpeed > 0 ? maxSpeed + ' Mbps' : '<span style="font-size:1.25em; line-height:0;">∞</span>'}</span>`;
 
                 // Connection flood warnings (P2P/torrent detection), newest last
                 let warningsHtml = '';
@@ -2236,6 +2416,10 @@
                     `<button class="btn btn-secondary btn-sm btn-icon conn-warning-clear" onclick="clearConnWarnings('${escapeJs(client.clientId)}')" title="${_('clear_warnings')}" style="margin-top:4px;">🗑</button></div>`;
                 }
 
+                // Per-peer bandwidth limit badge (AWG): ∞ by default, ⚡X Mbps when set
+                const maxSpeed = parseFloat(userData.maxSpeed || 0) || 0;
+                if (proto.startsWith('awg')) metaHtml += `<span class="traffic-badge" title="${_('max_speed')}">⚡${maxSpeed > 0 ? maxSpeed + ' Mbps' : '<span style="font-size:1.25em; line-height:0;">∞</span>'}</span>`;
+
                 if (proto === 'telemt') {
                     if (userData.total_octets) metaHtml += `<span class="traffic-badge">📊 ${formatBytes(userData.total_octets)}</span>`;
                     if (userData.current_connections !== undefined) metaHtml += `<span>🔌 ${userData.current_connections} conns</span>`;
@@ -2243,7 +2427,6 @@
                     if (userData.quota) metaHtml += `<span class="badge" style="font-size:0.65rem;">Quota: ${formatBytes(userData.quota)}</span>`;
                     if (userData.expiry) metaHtml += `<span class="badge" style="font-size:0.65rem;">⌛ ${formatDate(userData.expiry)}</span>`;
                 } else {
-                    // Live UI (restored: calls were lost in upstream merge of PR #88)
                     const hsSec = parseHandshakeAgo(handshake);
                     const isOnline = hsSec !== null && hsSec < 180;
                     if (handshake) metaHtml += `<span class="meta-handshake${isOnline ? ' meta-online' : ''}">🤝 ${formatHandshakeCompact(handshake)}</span>`;
@@ -2341,7 +2524,7 @@
                     document.querySelectorAll('.config-tab')[1].style.display = (proto === 'telemt' ? 'none' : '');
                     switchConfigTab('conf');
                     openModal('configModal');
-                    generateQR(result.config);
+                    generateQR(result.config, result.vpn_qr_chunks);
                 }
             }
             loadConnections();
@@ -2429,7 +2612,7 @@
     function startRenameConnection(clientId, btn) {
         const item = btn.closest('.client-item');
         const nameEl = item.querySelector('.client-name');
-        // .client-name also contains the .client-ip span; take only the name text
+        // .client-name also contains the .client-ip span; edit the name only
         const clone = nameEl.cloneNode(true);
         clone.querySelectorAll('.client-ip').forEach(el => el.remove());
         const oldName = clone.textContent.trim();
@@ -2476,10 +2659,6 @@
             showToast(_('enter_connection_name'), 'error');
             return;
         }
-        if (maxSpeed >= 0 && (isNaN(maxSpeed) || maxSpeed < 0 || maxSpeed > 100000)) {
-            showToast(_('error') + ': invalid speed', 'error');
-            return;
-        }
         try {
             const result = await apiCall(`/api/servers/${SERVER_ID}/connections/rename`, 'POST', {
                 protocol: proto, client_id: clientId, new_name: newName, max_speed: maxSpeed,
@@ -2515,7 +2694,7 @@
             currentConfig = text;
             currentVpnLink = result.vpn_link || '';
             document.getElementById('vpnLinkText').textContent = currentVpnLink;
-            generateQR(text);
+            generateQR(text, result.vpn_qr_chunks);
             showToast(_('config_saved'), 'success');
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
@@ -2567,7 +2746,7 @@
                 document.getElementById('vpnLinkText').textContent = currentVpnLink;
                 switchConfigTab('conf');
                 openModal('configModal');
-                generateQR(result.config);
+                generateQR(result.config, result.vpn_qr_chunks);
             }
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
@@ -2598,20 +2777,89 @@
         const tabIdx = { conf: 0, vpn: 1, qr: 2 };
         tabs[tabIdx[tab]].classList.add('active');
         document.getElementById(panels[tab]).classList.add('active');
+        // the frame series only animates while its panel is on screen
+        if (tab === 'qr') { renderQR(); } else { stopQrAnimation(); }
     }
 
-    function generateQR(text) {
+    // The QR shows one of two payloads: Amnezia's own config format, split into
+    // the frame series ImportController::parseQrCodeChunk reassembles, or the
+    // raw config, which is all AmneziaWG and wg-quick understand. The series
+    // exists because a whole config in one code lands at QR version 21-26,
+    // while the Android scanner reads 640x480 camera frames and cannot decode
+    // anything that dense. Every frame below stays under 55x55 modules.
+    const QR_FRAME_MS = 800;
+
+    let currentQrConfig = '';
+    let currentQrChunks = [];
+    let currentQrFormat = 'amnezia';
+    let qrFrame = 0;
+    let qrTimer = null;
+
+    function setQrFormat(format) {
+        currentQrFormat = format;
+        qrFrame = 0;
+        renderQR();
+    }
+
+    function generateQR(text, chunks) {
+        currentQrConfig = text || '';
+        currentQrChunks = chunks || [];
+        qrFrame = 0;
+        renderQR();
+    }
+
+    function stopQrAnimation() {
+        if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
+    }
+
+    function drawQr(text, size) {
         const container = document.getElementById('qrCode');
+        if (!container) return;
         container.innerHTML = '';
         try {
             new QRCode(container, {
-                text: text, width: 280, height: 280,
+                text: text, width: size, height: size,
                 colorDark: '#000000', colorLight: '#ffffff',
                 correctLevel: QRCode.CorrectLevel.L
             });
         } catch (e) {
-            console.error('QR lib error:', e);
             container.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;">${_('qr_error')}</div>`;
+        }
+    }
+
+    function renderQR() {
+        stopQrAnimation();
+        const named = currentQrFormat === 'amnezia' && currentQrChunks.length > 0;
+        const switcher = document.getElementById('qrFormat');
+        if (switcher) {
+            switcher.classList.toggle('hidden', currentQrChunks.length === 0);
+            switcher.querySelectorAll('.qr-format-btn').forEach(b =>
+                b.classList.toggle('active', b.dataset.fmt === (named ? 'amnezia' : 'wireguard')));
+        }
+        const hint = document.getElementById('qrFormatHint');
+        if (!named) {
+            if (hint) hint.textContent = _('qr_format_wireguard_hint');
+            drawQr(currentQrConfig, 280);
+            return;
+        }
+        const paint = () => {
+            drawQr(currentQrChunks[qrFrame], 300);
+            if (hint) {
+                hint.textContent = currentQrChunks.length > 1
+                    ? `${_('qr_format_amnezia_hint')} ${qrFrame + 1}/${currentQrChunks.length}`
+                    : _('qr_format_amnezia_hint');
+            }
+        };
+        paint();
+        if (currentQrChunks.length > 1) {
+            qrTimer = setInterval(() => {
+                // the modal was closed or another tab opened -- offsetParent is
+                // null once the panel is off screen, so stop burning a timer
+                const container = document.getElementById('qrCode');
+                if (!container || !container.offsetParent) { stopQrAnimation(); return; }
+                qrFrame = (qrFrame + 1) % currentQrChunks.length;
+                paint();
+            }, QR_FRAME_MS);
         }
     }
 

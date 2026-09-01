@@ -37,20 +37,8 @@ class SSHManager:
         self.pooled = False
 
     def connect(self):
-        """Establish SSH connection to the server.
-
-        Idempotent: if the transport is already live, do nothing. Dozens of
-        endpoints call ssh.connect() right after get_ssh(server); without
-        this guard each such call would tear down the pooled connection and
-        pay a full re-handshake on every API request.
-        """
+        """Establish SSH connection to the server."""
         with self._conn_lock:
-            try:
-                transport = self.client.get_transport() if self.client else None
-                if transport and transport.is_active():
-                    return True
-            except Exception:
-                pass
             self._disconnect_locked()
             # One retry on TCP connect timeout: links with random SYN loss
             # (e.g. transcontinental/DPI-filtered routes) drop ~half of the
@@ -175,8 +163,6 @@ class SSHManager:
             if not _retried:
                 logger.warning(f"exec failed ({e}); reconnecting and retrying once")
                 try:
-                    # connect() is now idempotent; force a fresh transport
-                    self.force_disconnect()
                     self.connect()
                 except Exception as ce:
                     logger.error(f"reconnect failed: {ce}")
