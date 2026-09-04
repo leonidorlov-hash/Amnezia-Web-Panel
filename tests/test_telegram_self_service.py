@@ -204,6 +204,24 @@ class TestUserCreateServerCallback(unittest.IsolatedAsyncioTestCase):
         self.assertIn('AmneziaWG', keyboard_text)
         self.assertIn('AmneziaWG 2.0', keyboard_text)
 
+    async def test_user_create_server_shows_xray_when_allowed_and_installed(self):
+        self.data['settings']['self_service']['allowed_protocols'] = ['awg', 'awg2', 'xray']
+        payload = {'sid': 0}
+        ref_key = tg_bot._ref('user_create_server', payload)
+        msg = _callback_update(chat_id=111, from_id=111, data_str=ref_key)
+        await _dispatch_callback(self.api, msg, self.load_data)
+        keyboard_text = json.dumps(self.api.edit_message.call_args[1].get('reply_markup', {}))
+        self.assertIn('Xray', keyboard_text)
+
+    async def test_user_create_server_shows_extra_protocol_instance(self):
+        self.data['servers'][0]['protocols']['awg__2'] = {'port': '55426'}
+        payload = {'sid': 0}
+        ref_key = tg_bot._ref('user_create_server', payload)
+        msg = _callback_update(chat_id=111, from_id=111, data_str=ref_key)
+        await _dispatch_callback(self.api, msg, self.load_data)
+        keyboard_text = json.dumps(self.api.edit_message.call_args[1].get('reply_markup', {}))
+        self.assertIn('AmneziaWG #2', keyboard_text)
+
     async def test_user_create_protocol_panel_uses_russian_when_telegram_language_is_ru(self):
         ref_key = tg_bot._ref('user_create_protocol', {'sid': 0, 'proto': 'awg2'})
         msg = _callback_update(chat_id=111, from_id=111, data_str=ref_key, language_code='ru')
@@ -339,6 +357,25 @@ class TestUserAddClientNameInputState(unittest.IsolatedAsyncioTestCase):
         self.mock_service.create_user_connection.assert_called_once()
         call_args = self.mock_service.create_user_connection.call_args
         self.assertEqual(call_args[0][0], 'user-1')
+
+    async def test_input_state_creates_connection_for_admin(self):
+        tg_bot._pending_inputs['222:222'] = {
+            'kind': 'user_add_client_name',
+            'sid': 0,
+            'proto': 'awg',
+            'ts': 0,
+        }
+        msg = {'chat': {'id': 222}, 'from': {'id': 222, 'first_name': 'Admin'}, 'text': 'AdminPhone'}
+
+        handled = await tg_bot._handle_pending_input(
+            self.api, msg, self.load_data, None, lambda c: 'vpn://x', self.mock_service
+        )
+
+        self.assertTrue(handled)
+        self.mock_service.create_user_connection.assert_called_once()
+        call_args = self.mock_service.create_user_connection.call_args
+        self.assertEqual(call_args[0][0], 'user-2')
+        self.assertEqual(call_args[0][3], 'AdminPhone')
 
     async def test_input_state_rejects_unlinked_user(self):
         tg_bot._pending_inputs['999:999'] = {

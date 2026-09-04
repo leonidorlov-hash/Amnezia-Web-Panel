@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, Stre
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi import FastAPI, Request, Query, UploadFile, File
+from fastapi import FastAPI, Request, Query, UploadFile, File, Form
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
@@ -52,6 +52,8 @@ from connection_service import (
     DEFAULT_SELF_SERVICE_SETTINGS,
     RateLimitError,
     SelfServiceError,
+    sanitize_allowed_protocols,
+    self_service_protocol_choices,
 )
 
 # Configure logging
@@ -106,8 +108,10 @@ if getattr(sys, 'frozen', False):
 else:
     application_path = os.path.dirname(__file__)
 
-DATA_FILE = os.path.join(application_path, 'data.json')
-CURRENT_VERSION = "v1.6.2"
+DATA_FILE = os.path.abspath(os.path.expanduser(
+    os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
+))
+CURRENT_VERSION = "v1.6.3"
 BIN_DIR = os.environ.get('TUNNEL_BIN_DIR', os.path.join(application_path, 'bin'))
 TUNNEL_STATE_FILE = os.environ.get('TUNNEL_STATE_FILE', os.path.join(application_path, 'tunnels_state.json'))
 
@@ -216,6 +220,7 @@ def load_data():
 
 def save_data(data):
     data_dir = os.path.dirname(DATA_FILE) or '.'
+    os.makedirs(data_dir, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix='.data-', suffix='.json', dir=data_dir)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -928,6 +933,31 @@ async def wait_for_tunnel_url(provider: str, seconds: int = 20):
 
 BASE_PROTOCOLS = ['awg', 'awg2', 'awg3', 'awg_legacy', 'xray', 'telemt', 'dns', 'wireguard', 'socks5', 'adguard', 'nginx']
 MULTI_INSTANCE_PROTOCOLS = {'awg', 'awg2', 'awg3', 'awg_legacy', 'xray', 'telemt', 'socks5'}
+
+
+def backfill_server_uids(servers) -> bool:
+    """Give every server record without a stable `uid` one; return True when
+    something changed. Only write paths call this (startup migration,
+    add-server, backup restore): minting ids inside load_data() would let two
+    concurrent readers hand out different uids for the same record."""
+    changed = False
+    for server in servers or []:
+        if not server.get('uid'):
+            server['uid'] = uuid.uuid4().hex
+            changed = True
+    return changed
+
+
+def find_server_by_uid(data, uid):
+    """Return (index, server) for a stable server uid, or (None, None) when the
+    uid is empty or unknown. Index-based server_id values shift on reorder and
+    delete, so cross-server references must resolve through this instead."""
+    if not uid:
+        return None, None
+    for idx, server in enumerate(data.get('servers', []) or []):
+        if server.get('uid') == uid:
+            return idx, server
+    return None, None
 
 
 def protocol_base(protocol: str) -> str:
@@ -2283,6 +2313,11 @@ async def startup():
         changed = True
         logger.info("Initialised empty api_tokens collection")
 
+    # Stable server identity: list indices shift on reorder/delete, uids don't.
+    if backfill_server_uids(data.get('servers')):
+        changed = True
+        logger.info("Assigned uids to servers that had none")
+
     # Auto backup settings migration
     auto_backup = data.setdefault('settings', {}).setdefault('auto_backup', {})
     if 'enabled' not in auto_backup:
@@ -2738,6 +2773,7 @@ async def api_add_server(request: Request, req: AddServerRequest):
             return JSONResponse({'error': f'Connection failed: {str(e)}'}, status_code=400)
 
         server = {
+            'uid': uuid.uuid4().hex,
             'name': name, 'host': host, 'ssh_port': req.ssh_port,
             'username': username, 'password': req.password,
             'private_key': req.private_key, 'server_info': server_info,
@@ -3639,6 +3675,116 @@ async def api_protocol_backup_download(request: Request, server_id: int, req: Ba
             ssh.disconnect()
 
 
+@app.post('/api/servers/{server_id}/backups/upload', tags=["Protocols"])
+async def api_protocol_backup_upload(
+    request: Request,
+    server_id: int,
+    protocol: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a protocol backup archive onto the remote server."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    if not is_valid_protocol(protocol):
+        return JSONResponse({'error': 'Unknown protocol'}, status_code=400)
+    ssh = None
+    tmp_path = None
+    try:
+        data = load_data()
+        if server_id < 0 or server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        content = await file.read(BackupManager.MAX_UPLOAD_BYTES + 1)
+        if not content:
+            return JSONResponse({'error': 'Empty file'}, status_code=400)
+        if len(content) > BackupManager.MAX_UPLOAD_BYTES:
+            return JSONResponse({'error': 'Backup file is too large'}, status_code=413)
+        fd, tmp_path = tempfile.mkstemp(prefix='amnezia-backup-upload-', suffix='.tar.gz')
+        os.write(fd, content)
+        os.close(fd)
+        fd = None
+        server = data['servers'][server_id]
+        ssh = get_ssh(server)
+        ssh.connect()
+        result = BackupManager(ssh).upload_backup(protocol, file.filename, tmp_path)
+        if result.get('status') == 'error':
+            return JSONResponse({'error': result.get('message', 'Failed to upload backup')}, status_code=400)
+        return result
+    except Exception as e:
+        logger.exception("Error uploading protocol backup")
+        return JSONResponse({'error': 'Internal server error'}, status_code=500)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        if ssh:
+            ssh.disconnect()
+
+
+@app.post('/api/servers/{server_id}/backups/restore', tags=["Protocols"])
+async def api_protocol_backup_restore(request: Request, server_id: int, req: BackupDownloadRequest):
+    """Restore a protocol from a backup archive on the remote server."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    if not is_valid_protocol(req.protocol):
+        return JSONResponse({'error': 'Unknown protocol'}, status_code=400)
+    filename = BackupManager.safe_filename(req.filename)
+    if not filename:
+        return JSONResponse({'error': 'Invalid backup filename'}, status_code=400)
+    ssh = None
+    try:
+        data = load_data()
+        if server_id < 0 or server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        container = protocol_container_name(req.protocol)
+        if not container:
+            return JSONResponse({'error': 'Unknown protocol'}, status_code=400)
+        ssh = get_ssh(server)
+        ssh.connect()
+        result = BackupManager(ssh).restore_backup(req.protocol, container, filename)
+        if result.get('status') == 'error':
+            return JSONResponse({'error': result.get('message', 'Failed to restore backup')}, status_code=500)
+        return result
+    except Exception as e:
+        logger.exception("Error restoring protocol backup")
+        return JSONResponse({'error': 'Internal server error'}, status_code=500)
+    finally:
+        if ssh:
+            ssh.disconnect()
+
+
+@app.post('/api/servers/{server_id}/backups/delete', tags=["Protocols"])
+async def api_protocol_backup_delete(request: Request, server_id: int, req: BackupDownloadRequest):
+    """Delete one protocol backup archive on the remote server."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    if not is_valid_protocol(req.protocol):
+        return JSONResponse({'error': 'Unknown protocol'}, status_code=400)
+    filename = BackupManager.safe_filename(req.filename)
+    if not filename:
+        return JSONResponse({'error': 'Invalid backup filename'}, status_code=400)
+    ssh = None
+    try:
+        data = load_data()
+        if server_id < 0 or server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        ssh = get_ssh(server)
+        ssh.connect()
+        result = BackupManager(ssh).delete_backup(req.protocol, filename)
+        if result.get('status') == 'error':
+            return JSONResponse({'error': result.get('message', 'Failed to delete backup')}, status_code=404)
+        return result
+    except Exception as e:
+        logger.exception("Error deleting protocol backup")
+        return JSONResponse({'error': 'Internal server error'}, status_code=500)
+    finally:
+        if ssh:
+            ssh.disconnect()
+
+
 @app.post('/api/servers/{server_id}/container/toggle', tags=["Protocols"])
 async def api_container_toggle(request: Request, server_id: int, req: ProtocolRequest):
     """Start or stop a protocol Docker container."""
@@ -4476,6 +4622,7 @@ async def api_my_connections(request: Request):
             c['server_name'] = data['servers'][sid].get('name', '')
         else:
             c['server_name'] = 'Unknown'
+        c['protocol_name'] = protocol_display_name(c.get('protocol', ''))
     return {'connections': conns}
 
 
@@ -4658,7 +4805,14 @@ async def settings_page(request: Request):
     if not user:
         return RedirectResponse('/login')
     data = load_data()
-    return tpl(request, 'settings.html', settings=data.get('settings', {}), servers=data.get('servers', []), current_version=CURRENT_VERSION)
+    return tpl(
+        request,
+        'settings.html',
+        settings=data.get('settings', {}),
+        servers=data.get('servers', []),
+        current_version=CURRENT_VERSION,
+        self_service_protocol_choices=self_service_protocol_choices(),
+    )
 
 
 @app.get('/api/settings', tags=["Settings"])
@@ -4800,7 +4954,7 @@ async def save_settings(request: Request, payload: SaveSettingsRequest):
         'last_error': old_auto_backup.get('last_error')
     }
     self_service = payload.self_service.dict()
-    self_service['allowed_protocols'] = [p for p in self_service.get('allowed_protocols', []) if p in ('awg', 'awg2')]
+    self_service['allowed_protocols'] = sanitize_allowed_protocols(self_service.get('allowed_protocols'))
     settings['self_service'] = self_service
     save_data(data)
     logger.info("Settings saved (including captcha, telegram and auto backup)")
@@ -5013,7 +5167,9 @@ async def api_backup_restore(request: Request, file: UploadFile = File(...)):
         if not isinstance(backup_data['servers'], list) or not isinstance(backup_data['users'], list):
             return JSONResponse({'error': 'Invalid structure: servers and users must be lists'}, status_code=400)
 
-        # Save the new data
+        # Save the new data; older backups predate server uids, mint them now
+        # so the file on disk is complete without waiting for the next restart.
+        backfill_server_uids(backup_data['servers'])
         async with DATA_LOCK:
             save_data(backup_data)
         
