@@ -496,5 +496,8 @@
   "wgeasy_confirm": "Импортировать выбранных клиентов? Старый контейнер wg-easy будет остановлен.",
   "wgeasy_importing": "Импортирую, это может занять несколько минут...",
   "wgeasy_target_wg": "цель: WireGuard (без обфускации)",
-  "wgeasy_target_awg": "обнаружена обфускация → цель: AmneziaWG 2.0"
+  "wgeasy_target_awg": "обнаружена обфускация → цель: AmneziaWG 2.0",
+  "rename_instance": "Переименовать инстанс",
+  "instance_name": "Название инстанса",
+  "rename_instance_hint": "Пустое поле — вернуть название по умолчанию."
 }

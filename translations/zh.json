@@ -463,5 +463,8 @@
   "wgeasy_confirm": "Import selected clients? The old wg-easy container will be stopped.",
   "wgeasy_importing": "Importing, this may take a few minutes...",
   "wgeasy_target_wg": "target: WireGuard (no obfuscation)",
-  "wgeasy_target_awg": "obfuscation detected → target: AmneziaWG 2.0"
+  "wgeasy_target_awg": "obfuscation detected → target: AmneziaWG 2.0",
+  "rename_instance": "Rename instance",
+  "instance_name": "Instance name",
+  "rename_instance_hint": "Leave empty to restore the default name."
 }

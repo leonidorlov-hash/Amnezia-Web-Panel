@@ -892,6 +892,12 @@ a:hover {
     margin-bottom: var(--space-md);
 }
 
+.protocol-icon img {
+    width: 40px;
+    height: 40px;
+    object-fit: contain;
+}
+
 .protocol-awg .protocol-icon {
     background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(99, 102, 241, 0.1));
     color: var(--accent-light);
