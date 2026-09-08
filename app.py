@@ -5291,7 +5291,7 @@ async def api_get_server_clients(request: Request, server_id: int, protocol: str
         ssh = get_ssh(server)
         ssh.connect()
         manager = get_protocol_manager(ssh, protocol)
-        clients = manager.get_clients(protocol)
+        clients = _manager_call(manager, 'get_clients', protocol)
         ssh.disconnect()
         
         # Filter: only show clients that are not assigned to anyone in the panel
