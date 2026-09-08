@@ -4805,6 +4805,42 @@ async def api_get_user_connections(request: Request, user_id: str):
         sid = c.get('server_id', 0)
         if sid < len(data['servers']):
             c['server_name'] = data['servers'][sid].get('name', '')
+
+    # Enrich with live peer data (IP, enabled, handshake, transfer, speed
+    # limit) from each server the user has connections on. One SSH session
+    # per (server, protocol) group; unreachable servers degrade gracefully —
+    # the DB fields above are still returned.
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for c in conns:
+        groups[(c.get('server_id', 0), c.get('protocol', 'awg'))].append(c)
+    for (sid, proto), items in groups.items():
+        try:
+            if sid >= len(data['servers']):
+                continue
+            server = data['servers'][sid]
+            ssh = get_ssh(server)
+            ssh.connect()
+            try:
+                manager = get_protocol_manager(ssh, proto)
+                clients = _manager_call(manager, 'get_clients', proto)
+            finally:
+                ssh.disconnect()
+        except Exception as e:
+            logger.warning(f"Could not enrich connections from server {sid}/{proto}: {e}")
+            continue
+        by_id = {cl.get('clientId'): cl for cl in clients}
+        for c in items:
+            cl = by_id.get(c.get('client_id'))
+            if not cl:
+                continue
+            ud = cl.get('userData', {}) or {}
+            c['enabled'] = cl.get('enabled', True)
+            c['allowed_ips'] = ud.get('allowedIps', '')
+            c['latest_handshake'] = ud.get('latestHandshake', '')
+            c['data_received'] = ud.get('dataReceived', '')
+            c['data_sent'] = ud.get('dataSent', '')
+            c['max_speed'] = ud.get('maxSpeed', 0) or 0
     return {'connections': conns}
 
 
