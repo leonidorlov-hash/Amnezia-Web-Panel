@@ -510,5 +510,7 @@
   "role_none_desc": "Без роли — только учётная запись, без входа",
   "role_none_badge": "Без роли",
   "password_optional_no_role": "Для роли «Без роли» пароль не нужен",
-  "password_required_for_role": "Для выбранной роли пароль обязателен"
+  "password_required_for_role": "Для выбранной роли пароль обязателен",
+  "peer_already_linked": "Этот пир уже привязан к пользователю {}",
+  "peer_already_linked_self": "Этот пир уже привязан к данному пользователю"
 }

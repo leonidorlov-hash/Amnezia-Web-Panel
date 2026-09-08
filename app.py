@@ -4738,6 +4738,25 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
         if req.server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         server = data['servers'][req.server_id]
+
+        if req.client_id:
+            # A peer is a single on/off entity on the server: linking it to a
+            # second panel user would make both cards control the same peer.
+            # Reject any double-link, even to the same user.
+            clash = next(
+                (c for c in data.get('user_connections', [])
+                 if c.get('client_id') == req.client_id
+                 and c.get('server_id') == req.server_id
+                 and c.get('protocol') == req.protocol),
+                None,
+            )
+            if clash:
+                lang = request.cookies.get('lang', 'ru')
+                if clash.get('user_id') == user_id:
+                    return JSONResponse({'error': _t('peer_already_linked_self', lang)}, status_code=400)
+                owner = next((u for u in data['users'] if u['id'] == clash.get('user_id')), None)
+                owner_name = owner['username'] if owner else '?'
+                return JSONResponse({'error': _t('peer_already_linked', lang).replace('{}', owner_name)}, status_code=400)
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
         ssh = get_ssh(server)

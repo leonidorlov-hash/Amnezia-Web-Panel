@@ -477,5 +477,7 @@
   "role_none_desc": "无角色 — 仅记录，无法登录",
   "role_none_badge": "无角色",
   "password_optional_no_role": "“无角色”角色无需密码",
-  "password_required_for_role": "所选角色必须设置密码"
+  "password_required_for_role": "所选角色必须设置密码",
+  "peer_already_linked": "该节点已绑定到用户 {}",
+  "peer_already_linked_self": "该节点已绑定到此用户"
 }

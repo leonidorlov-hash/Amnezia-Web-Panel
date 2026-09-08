@@ -874,7 +874,9 @@
             showToast(mode === 'existing' ? _('conn_linked') : _('connection_created').replace('{}', body.name), 'success');
             closeModal('addUserConnModal');
 
-            if (result.config) {
+            // Linking an existing peer: no config popup — the admin already
+            // has that config; just refresh the list.
+            if (result.config && mode !== 'existing') {
                 currentConfig = result.config;
                 currentVpnLink = result.vpn_link || '';
                 currentConfigName = document.getElementById('ucName').value.replace(/\s+/g, '_');

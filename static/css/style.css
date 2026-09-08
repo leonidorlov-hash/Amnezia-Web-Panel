@@ -2231,7 +2231,6 @@ a:hover {
 }
 
 .speed-badge {
-    min-width: 172px; /* fits "↓1023.9 KB/s ↑1023.9 KB/s" */
     justify-content: flex-start;
     background: rgba(128, 128, 128, 0.12);
     color: var(--text-muted);
