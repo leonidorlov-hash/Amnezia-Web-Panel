@@ -1401,6 +1401,11 @@ a:hover {
     transition: opacity var(--transition-base);
 }
 
+/* Deep-linked peer card (from the users page connections modal). */
+.client-item.peer-highlight {
+    border: 2px solid #7038da;
+}
+
 .protocol-name {
     font-size: 1.1rem;
     font-weight: 700;

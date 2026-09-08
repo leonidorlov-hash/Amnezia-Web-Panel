@@ -2867,7 +2867,7 @@
         const btn = document.querySelector(`[onclick*="${CSS.escape(highlightedPeerId)}"]`);
         const row = btn && btn.closest('.client-item');
         if (!row) return;
-        row.style.border = '2px solid #7038da';
+        row.classList.add('peer-highlight');
         if (scroll) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
 

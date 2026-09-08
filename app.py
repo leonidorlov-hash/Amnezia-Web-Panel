@@ -4835,7 +4835,9 @@ async def api_get_user_connections(request: Request, user_id: str):
             if not cl:
                 continue
             ud = cl.get('userData', {}) or {}
-            c['peer_name'] = cl.get('name', '')  # live name in the instance, may differ from the panel record
+            # Peer names live in userData.clientName (same place the server
+            # page reads them); fall back to a top-level key just in case.
+            c['peer_name'] = ud.get('clientName') or cl.get('name', '')
             # Managers store the flag in userData.enabled; fall back to the
             # top-level key just in case another manager sets it there.
             enabled = cl.get('enabled', ud.get('enabled', True))
