@@ -584,10 +584,10 @@
                                 data-haspassword="${u.has_share_password ? 'true' : 'false'}"
                                 title="${_('share_access')}">📤</button>
                         ${u.id !== "{{ current_user.id }}" ? `
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="toggleUser(this.dataset)"
+                            <button class="btn btn-secondary btn-sm btn-icon peer-toggle${u.enabled ? '' : ' peer-toggle-off'}" onclick="toggleUser(this.dataset, this)"
                                     data-id="${u.id}" data-enable="${u.enabled ? 'false' : 'true'}"
                                     title="${u.enabled ? _('stop_btn') : _('start_btn')}">
-                                ${u.enabled ? '🔵' : '⚫'}
+                                💡
                             </button>
                             <button class="btn btn-danger btn-sm btn-icon" onclick="deleteUser('${u.id}')" title="${_('delete')}">${ICON_TRASH}</button>
                         ` : ''}
@@ -766,16 +766,29 @@
         }
     }
 
-    async function toggleUser(dataset) {
+    async function toggleUser(dataset, btn) {
+        const userId = dataset.id;
+        const enable = dataset.enable === 'true';
+        const original = btn ? btn.innerHTML : null;
+        // Lock the whole user card and swap the bulb for a spinner
+        const row = btn ? btn.closest('.client-item') : null;
+        if (row) {
+            row.classList.add('client-toggling');
+            row.querySelectorAll('button').forEach(b => b.disabled = true);
+        }
+        if (btn) btn.innerHTML = '<span class="spinner"></span>';
         try {
-            const userId = dataset.id;
-            const enable = dataset.enable === 'true';
             const action = enable ? _('enabling') : _('disabling');
             showToast(`${action}...`, 'info');
             await apiCall(`/api/users/${userId}/toggle`, 'POST', { enabled: enable });
             showToast(enable ? _('user_enabled') : _('user_disabled'), 'success');
             setTimeout(() => window.location.reload(), 500);
         } catch (err) {
+            if (row) {
+                row.classList.remove('client-toggling');
+                row.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+            if (btn && original !== null) btn.innerHTML = original;
             showToast(`${_('error')}: ` + err.message, 'error');
         }
     }
@@ -909,7 +922,9 @@
             data.connections.forEach(c => {
                 const sid = Number(c.server_id) || 0;
                 const proto = c.protocol || 'awg';
-                const name = c.name || 'Connection';
+                // Show the live peer name from the instance (matched by client
+                // id / IP) — the panel-side record name is just a label.
+                const name = c.peer_name || c.name || 'Connection';
                 const enabled = c.enabled !== false;
                 const ip = (c.allowed_ips || '').split(',')[0].split('/')[0].trim();
                 const maxSpeed = parseFloat(c.max_speed || 0) || 0;
@@ -917,6 +932,7 @@
                 const toggleCls = enabled ? 'peer-toggle' : 'peer-toggle peer-toggle-off';
                 const toggleTitle = enabled ? _('stop') : _('starting');
                 const disabledStyle = enabled ? '' : 'opacity:0.5;';
+                const serverLink = `/server/${sid}?protocol=${encodeURIComponent(proto)}&highlight=${encodeURIComponent(c.client_id)}`;
                 listEl.innerHTML += `
                     <div class="client-item" data-maxspeed="${maxSpeed}">
                         <div class="client-info" style="${disabledStyle}">
@@ -924,7 +940,7 @@
                             <div>
                                 <div class="client-name">${escapeHtml(name)}${ip ? ` <span class="client-ip">${escapeHtml(ip)}</span>` : ''}</div>
                                 <div class="client-meta">
-                                    <span>🖥 ${escapeHtml(c.server_name || '')}</span>
+                                    <span>🖥 <a href="${serverLink}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:underline;">${escapeHtml(c.server_name || '')}</a></span>
                                     <span>${escapeHtml(proto === 'awg' ? 'AmneziaWG' : (proto === 'awg2' ? 'AmneziaWG 2.0' : (proto === 'awg_legacy' ? 'AWG Legacy' : (proto === 'xray' ? 'Xray' : (proto === 'wireguard' ? 'WireGuard' : proto.toUpperCase())))))}</span>
                                     ${dateStr ? `<span>📅 ${dateStr}</span>` : ''}
                                     <span class="traffic-badge traffic-limit" title="${_('max_speed')}">${maxSpeed > 0 ? '🐢 ' + maxSpeed + ' Mbps' : '⚡<span style="font-size:1.25em; line-height:0;">∞</span>'}</span>

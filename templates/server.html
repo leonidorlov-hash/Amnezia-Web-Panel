@@ -2846,11 +2846,46 @@
             showToast(_('connections_load_error') + ': ' + err.message, 'error');
         } finally {
             window.connLoading = false;
+            highlightPeerFromQuery();
             // Auto-refresh every 5s while the connections section is visible (live speed/handshake)
             clearTimeout(window.connPollTimer);
             if (document.getElementById('connectionsSection').style.display !== 'none') {
                 window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
             }
+        }
+    }
+
+    // Deep link from the users page: /server/N?protocol=awg2&highlight=<client_id>
+    // switches to the right instance, frames the peer's card and scrolls it
+    // into the middle of the viewport. The id is kept in a var so the 5s poll
+    // re-applies the frame after every re-render; URL params are cleaned so a
+    // refresh doesn't scroll again.
+    let highlightedPeerId = null;
+
+    function applyPeerHighlight(scroll) {
+        if (!highlightedPeerId) return;
+        const btn = document.querySelector(`[onclick*="${CSS.escape(highlightedPeerId)}"]`);
+        const row = btn && btn.closest('.client-item');
+        if (!row) return;
+        row.style.border = '2px solid #7038da';
+        if (scroll) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+
+    function highlightPeerFromQuery() {
+        const params = new URLSearchParams(location.search);
+        const proto = params.get('protocol');
+        const target = params.get('highlight');
+        if (!proto && !target) { applyPeerHighlight(false); return; }
+        const select = document.getElementById('connProtoSelect');
+        if (proto && select.value !== proto) {
+            select.value = proto;
+            loadConnections();
+            return;
+        }
+        if (target) {
+            highlightedPeerId = target;
+            history.replaceState(null, '', location.pathname);
+            applyPeerHighlight(true);
         }
     }
 

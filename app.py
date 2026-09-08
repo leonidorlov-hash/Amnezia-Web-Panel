@@ -4835,6 +4835,7 @@ async def api_get_user_connections(request: Request, user_id: str):
             if not cl:
                 continue
             ud = cl.get('userData', {}) or {}
+            c['peer_name'] = cl.get('name', '')  # live name in the instance, may differ from the panel record
             c['enabled'] = cl.get('enabled', True)
             c['allowed_ips'] = ud.get('allowedIps', '')
             c['latest_handshake'] = ud.get('latestHandshake', '')
