@@ -515,5 +515,9 @@
   "peer_already_linked_self": "Этот пир уже привязан к данному пользователю",
   "select_connection": "Выберите подключение",
   "name_required": "Укажите имя",
-  "no_servers_available": "Нет доступных серверов"
+  "no_servers_available": "Нет доступных серверов",
+  "unlink_key_title": "Отвязать ключ {} от пользователя \"{}\"?",
+  "unlink_confirm": "Точно отвязать ?!",
+  "conn_unlinked": "Подключение отвязано",
+  "awg_dns6_hint": "Используется в ключах, когда туннель dual-stack (IPv4+IPv6)"
 }

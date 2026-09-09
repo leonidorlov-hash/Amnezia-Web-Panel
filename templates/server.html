@@ -698,6 +698,11 @@
                         <label class="form-label">DNS 2</label>
                         <input class="form-input" type="text" id="installAwgDns2" value="1.0.0.1">
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">DNS IPv6</label>
+                        <input class="form-input" type="text" id="installAwgDns6" value="2606:4700:4700::1111">
+                        <div class="form-hint">{{ _('awg_dns6_hint') }}</div>
+                    </div>
                 </div>
                 <div id="installAwgJunk">
                     <div class="form-group">
@@ -861,6 +866,11 @@
             <div class="form-group">
                 <label class="form-label">DNS 2</label>
                 <input class="form-input" type="text" id="awgSetDns2">
+            </div>
+            <div class="form-group">
+                <label class="form-label">DNS IPv6</label>
+                <input class="form-input" type="text" id="awgSetDns6" placeholder="2606:4700:4700::1111">
+                <div class="form-hint">{{ _('awg_dns6_hint') }}</div>
             </div>
         </div>
         <div class="form-group" id="awgSetJunkGroup">
@@ -2313,6 +2323,7 @@
             document.getElementById('installAwgMtu').value = '1376';
             document.getElementById('installAwgDns1').value = '1.1.1.1';
             document.getElementById('installAwgDns2').value = '1.0.0.1';
+            document.getElementById('installAwgDns6').value = '2606:4700:4700::1111';
             resetSpecialJunkFields('installAwg');
         }
 
@@ -2392,6 +2403,7 @@
                 params.awg_mtu = document.getElementById('installAwgMtu').value.trim();
                 params.awg_dns1 = document.getElementById('installAwgDns1').value.trim();
                 params.awg_dns2 = document.getElementById('installAwgDns2').value.trim();
+                params.awg_dns6 = document.getElementById('installAwgDns6').value.trim();
                 if (protoBase(currentInstallProto) !== 'awg_legacy') {
                     ['i1', 'i2', 'i3', 'i4', 'i5'].forEach(key => {
                         params['awg_' + key] = specialJunkField('installAwg', key).value.trim();
@@ -2621,6 +2633,7 @@
             document.getElementById('awgSetMtu').value = data.mtu || '1376';
             document.getElementById('awgSetDns1').value = data.dns1 || '';
             document.getElementById('awgSetDns2').value = data.dns2 || '';
+            document.getElementById('awgSetDns6').value = data.dns6 || '';
             const junkGroup = document.getElementById('awgSetJunkGroup');
             junkGroup.style.display = data.supports_special_junk ? '' : 'none';
             SPECIAL_JUNK_KEYS.forEach(key => {
@@ -2642,6 +2655,7 @@
             mtu: document.getElementById('awgSetMtu').value.trim(),
             dns1: document.getElementById('awgSetDns1').value.trim(),
             dns2: document.getElementById('awgSetDns2').value.trim(),
+            dns6: document.getElementById('awgSetDns6').value.trim(),
         };
         if (document.getElementById('awgSetJunkGroup').style.display !== 'none') {
             SPECIAL_JUNK_KEYS.forEach(key => {

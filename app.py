@@ -2020,6 +2020,7 @@ class InstallProtocolRequest(BaseModel):
     awg_mtu: Optional[str] = None
     awg_dns1: Optional[str] = None
     awg_dns2: Optional[str] = None
+    awg_dns6: Optional[str] = None
     awg_i1: Optional[str] = None
     awg_i2: Optional[str] = None
     awg_i3: Optional[str] = None
@@ -2032,6 +2033,7 @@ class AwgSettingsRequest(BaseModel):
     mtu: Optional[str] = None
     dns1: Optional[str] = None
     dns2: Optional[str] = None
+    dns6: Optional[str] = None
     i1: Optional[str] = None
     i2: Optional[str] = None
     i3: Optional[str] = None
@@ -3400,6 +3402,7 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 mtu=req.awg_mtu,
                 dns=join_dns(req.awg_dns1, req.awg_dns2),
                 special_junk=awg_special_junk,
+                dns6=req.awg_dns6,
             )
         else:
             result = manager.install_protocol(install_protocol, port=req.port)
@@ -3562,6 +3565,7 @@ async def api_awg_settings_save(request: Request, server_id: int, req: AwgSettin
                 mtu=req.mtu,
                 dns=dns,
                 special_junk=special_junk,
+                dns6=req.dns6,
             )
         finally:
             ssh.disconnect()
@@ -3569,6 +3573,7 @@ async def api_awg_settings_save(request: Request, server_id: int, req: AwgSettin
         if proto_record is not None:
             proto_record['mtu'] = settings.get('mtu')
             proto_record['dns'] = settings.get('dns')
+            proto_record['dns6'] = settings.get('dns6')
             save_data(data)
         settings['dns1'], settings['dns2'] = split_dns(settings.get('dns'))
         settings['status'] = 'success'
@@ -4808,6 +4813,34 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
     except Exception as e:
         logger.exception("Error adding user connection")
         return JSONResponse({'error': str(e)}, status_code=500)
+
+
+class UnlinkConnectionRequest(BaseModel):
+    server_id: int
+    protocol: str = 'awg'
+    client_id: str = ''
+
+
+@app.post('/api/users/{user_id}/connections/unlink', tags=["Users"])
+async def api_unlink_user_connection(request: Request, user_id: str, req: UnlinkConnectionRequest):
+    """Detach a connection from the user WITHOUT touching the peer on the
+    server: the key keeps working and the peer goes back to the pool of
+    linkable existing clients."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    before = len(data.get('user_connections', []))
+    data['user_connections'] = [
+        c for c in data.get('user_connections', [])
+        if not (c.get('user_id') == user_id
+                and c.get('server_id') == req.server_id
+                and c.get('protocol') == req.protocol
+                and c.get('client_id') == req.client_id)
+    ]
+    if len(data['user_connections']) == before:
+        return JSONResponse({'error': 'Connection link not found'}, status_code=404)
+    save_data(data)
+    return {'status': 'success'}
 
 
 @app.get('/api/users/{user_id}/connections', tags=["Users"])

@@ -482,5 +482,9 @@
   "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است",
   "select_connection": "یک اتصال انتخاب کنید",
   "name_required": "نام الزامی است",
-  "no_servers_available": "سروری در دسترس نیست"
+  "no_servers_available": "سروری در دسترس نیست",
+  "unlink_key_title": "لغو اتصال کلید {} از کاربر \"{}\"؟",
+  "unlink_confirm": "واقعاً لغو اتصال شود؟!",
+  "conn_unlinked": "اتصال لغو شد",
+  "awg_dns6_hint": "وقتی تونل دوپشته (IPv4+IPv6) است در کلیدها استفاده می‌شود"
 }

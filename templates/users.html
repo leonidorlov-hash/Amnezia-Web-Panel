@@ -955,6 +955,7 @@
                             <button class="btn btn-secondary btn-sm btn-icon" onclick="renameUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('rename')}">${ICON_PENCIL}</button>
                             <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('config')}">📄</button>
                             <button class="btn btn-secondary btn-sm btn-icon ${toggleCls}" onclick="toggleUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', ${!enabled}, this)" title="${toggleTitle}">💡</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="unlinkUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('unlink_key_title').replace('{}', name).replace('{}', currentConnsUsername)}">✂️</button>
                             <button class="btn btn-danger btn-sm btn-icon" onclick="removeUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('delete')}">${ICON_TRASH}</button>
                         </div>
                     </div>
@@ -999,6 +1000,19 @@
                 protocol: proto, client_id: clientId, new_name: newName.trim(),
             });
             showToast(_('success'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    async function unlinkUserConnection(serverId, clientId, proto, name) {
+        if (!confirm(_('unlink_confirm'))) return;
+        try {
+            await apiCall(`/api/users/${currentConnsUserId}/connections/unlink`, 'POST', {
+                server_id: serverId, protocol: proto, client_id: clientId,
+            });
+            showToast(_('conn_unlinked'), 'success');
             viewUserConnections(currentConnsUserId, currentConnsUsername);
         } catch (err) {
             showToast(`${_('error')}: ` + err.message, 'error');

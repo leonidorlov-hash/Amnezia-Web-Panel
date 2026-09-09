@@ -909,7 +909,7 @@ done
         return info
 
     def install_protocol(self, protocol_type, port=None, awg_params=None,
-                         mtu=None, dns=None, special_junk=None):
+                         mtu=None, dns=None, special_junk=None, dns6=None):
         """
         Full installation of AWG or AWG-Legacy protocol.
         Steps: install docker -> prepare host -> build container ->
@@ -1046,7 +1046,7 @@ done
             "No usable IPv6 (host or Docker), tunnel will be IPv4-only"
         )
         self._configure_container(protocol_type, port, awg_params, ipv6=ipv6_enabled,
-                                  mtu=mtu, dns=dns)
+                                  mtu=mtu, dns=dns, dns6=dns6)
         results.append("AWG configured")
 
         # Step 7: Upload and run start script
@@ -1101,7 +1101,7 @@ done
         )
 
     def _configure_container(self, protocol_type, port, awg_params, ipv6=False,
-                             mtu=None, dns=None):
+                             mtu=None, dns=None, dns6=None):
         """Configure the AWG container (generate keys and server config)."""
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
@@ -2584,6 +2584,7 @@ AllowedIPs = {allowed_ips}
         settings = {
             'mtu': self._get_mtu(protocol_type),
             'dns': self._get_dns(protocol_type),
+            'dns6': self._get_dns6(protocol_type),
             'default_i1': AWG_DEFAULT_I1,
             'supports_special_junk': self._base_protocol(protocol_type) != self.AWG_LEGACY,
         }
@@ -2591,7 +2592,7 @@ AllowedIPs = {allowed_ips}
             settings[key] = params.get(key, '')
         return settings
 
-    def update_awg_settings(self, protocol_type, mtu=None, dns=None, special_junk=None):
+    def update_awg_settings(self, protocol_type, mtu=None, dns=None, special_junk=None, dns6=None):
         """Rewrite MTU/DNS/I1-I5 in the server config and apply them live.
 
         I1-I5 go to the kernel through `awg syncconf`, so peers stay up; MTU
@@ -2624,6 +2625,9 @@ AllowedIPs = {allowed_ips}
         if dns is not None:
             value = str(dns).strip()
             replaced['DNS'] = f"# DNS = {value}" if value else None
+        if dns6 is not None:
+            value = str(dns6).strip()
+            replaced['DNS6'] = f"# DNS6 = {value}" if value else None
         if junk is not None:
             for key in SPECIAL_JUNK_KEYS:
                 value = junk.get(key)

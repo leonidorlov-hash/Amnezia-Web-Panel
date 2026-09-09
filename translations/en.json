@@ -515,5 +515,9 @@
   "peer_already_linked_self": "This peer is already linked to this user",
   "select_connection": "Select a connection",
   "name_required": "Name is required",
-  "no_servers_available": "No servers available"
+  "no_servers_available": "No servers available",
+  "unlink_key_title": "Unlink key {} from user \"{}\"?",
+  "unlink_confirm": "Really unlink?!",
+  "conn_unlinked": "Connection unlinked",
+  "awg_dns6_hint": "Used in client keys when the tunnel is dual-stack (IPv4+IPv6)"
 }

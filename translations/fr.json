@@ -482,5 +482,9 @@
   "peer_already_linked_self": "Ce pair est déjà lié à cet utilisateur",
   "select_connection": "Sélectionnez une connexion",
   "name_required": "Le nom est requis",
-  "no_servers_available": "Aucun serveur disponible"
+  "no_servers_available": "Aucun serveur disponible",
+  "unlink_key_title": "Dissocier la clé {} de l'utilisateur « {} » ?",
+  "unlink_confirm": "Vraiment dissocier ?!",
+  "conn_unlinked": "Connexion dissociée",
+  "awg_dns6_hint": "Utilisé dans les clés quand le tunnel est dual-stack (IPv4+IPv6)"
 }
