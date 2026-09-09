@@ -41,6 +41,8 @@ AWG_DEFAULTS = {
     'subnet_ipv6_ip': 'fd42:8:1::1',
     'subnet_ipv6_cidr': '64',    'dns1': '1.1.1.1',
     'dns2': '1.0.0.1',
+    # Default IPv6 resolver appended to client DNS when the tunnel is dual-stack
+    'dns6': '2606:4700:4700::1111',
     # AWG obfuscation parameters
     'junk_packet_count': '3',
     'junk_packet_min_size': '10',
@@ -1130,6 +1132,10 @@ done
             f"# MTU = {mtu or AWG_DEFAULTS['mtu']}\n"
             f"# DNS = {dns or self._default_dns()}\n"
         )
+        # IPv6 DNS for dual-stack tunnels, stored the same comment way;
+        # _get_dns6 reads it back when building client configs.
+        if ipv6:
+            client_defaults_lines += f"# DNS6 = {AWG_DEFAULTS['dns6']}\n"
 
         address_line = f"{subnet_ip}/{subnet_cidr}"
         if ipv6:
@@ -2179,7 +2185,7 @@ AllowedIPs = {allowed_ips}
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
-        dns_line = dns + (", 2606:4700:4700::1111" if client_ipv6 else "")
+        dns_line = dns + (", " + self._get_dns6(protocol_type) if client_ipv6 else "")
         config_lines = [
             f"Address = {address_line}",
             f"DNS = {dns_line}",
@@ -2275,7 +2281,7 @@ PersistentKeepalive = 25
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
-        dns_line = dns + (", 2606:4700:4700::1111" if client_ipv6 else "")
+        dns_line = dns + (", " + self._get_dns6(protocol_type, ud) if client_ipv6 else "")
         config_lines = [
             f"Address = {address_line}",
             f"DNS = {dns_line}",
@@ -2555,6 +2561,16 @@ AllowedIPs = {allowed_ips}
         if user_data and user_data.get('dns'):
             return user_data['dns']
         return self._read_config_key(protocol_type, 'DNS') or self._default_dns()
+
+    def _get_dns6(self, protocol_type, user_data=None):
+        """IPv6 DNS appended to client configs on dual-stack tunnels.
+
+        Priority: per-client override (userData.dns6) > `# DNS6 = ...` line in
+        the server config (written at install when IPv6 is enabled) > built-in
+        default (Cloudflare v6)."""
+        if user_data and user_data.get('dns6'):
+            return user_data['dns6']
+        return self._read_config_key(protocol_type, 'DNS6') or AWG_DEFAULTS['dns6']
 
     def get_awg_settings(self, protocol_type):
         """Client-facing AWG settings currently stored in the server config."""
