@@ -2185,7 +2185,10 @@ AllowedIPs = {allowed_ips}
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
-        dns_line = dns + (", " + self._get_dns6(protocol_type) if client_ipv6 else "")
+        dns6 = self._get_dns6(protocol_type) if client_ipv6 else ""
+        # Guard against duplicates: a manually saved client config may
+        # already carry the v6 resolver inside userData.dns.
+        dns_line = dns + (", " + dns6 if dns6 and dns6 not in dns else "")
         config_lines = [
             f"Address = {address_line}",
             f"DNS = {dns_line}",
@@ -2281,7 +2284,10 @@ PersistentKeepalive = 25
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
-        dns_line = dns + (", " + self._get_dns6(protocol_type, ud) if client_ipv6 else "")
+        dns6 = self._get_dns6(protocol_type, ud) if client_ipv6 else ""
+        # Guard against duplicates: a manually saved client config may
+        # already carry the v6 resolver inside userData.dns.
+        dns_line = dns + (", " + dns6 if dns6 and dns6 not in dns else "")
         config_lines = [
             f"Address = {address_line}",
             f"DNS = {dns_line}",
