@@ -966,6 +966,14 @@ a:hover {
     transform: translateY(0) scale(1);
 }
 
+#userConnsModal .modal {
+    max-width: 960px;
+}
+
+.page--servers .btn-sm {
+    padding: 6px 12px;
+}
+
 .modal-header {
     display: flex;
     align-items: center;

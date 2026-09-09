@@ -307,6 +307,7 @@
   "management": "Gestion",
   "server_management": "Gestion du serveur",
   "server_management_desc": "Effectuer des actions au niveau du système sur votre machine.",
+  "server_stats_toggle": "Récupérer et actualiser la charge CPU, la RAM, le disque et le trafic total du serveur",
   "check_server_services": "Vérifier les services du serveur",
   "reboot_server": "Redémarrer le serveur",
   "clear_server": "Réinitialiser le serveur",
