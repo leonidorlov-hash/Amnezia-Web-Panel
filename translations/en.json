@@ -512,5 +512,8 @@
   "password_optional_no_role": "No password needed for the “No role” role",
   "password_required_for_role": "A password is required for the selected role",
   "peer_already_linked": "This peer is already linked to user {}",
-  "peer_already_linked_self": "This peer is already linked to this user"
+  "peer_already_linked_self": "This peer is already linked to this user",
+  "select_connection": "Select a connection",
+  "name_required": "Name is required",
+  "no_servers_available": "No servers available"
 }

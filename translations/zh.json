@@ -479,5 +479,8 @@
   "password_optional_no_role": "“无角色”角色无需密码",
   "password_required_for_role": "所选角色必须设置密码",
   "peer_already_linked": "该节点已绑定到用户 {}",
-  "peer_already_linked_self": "该节点已绑定到此用户"
+  "peer_already_linked_self": "该节点已绑定到此用户",
+  "select_connection": "请选择连接",
+  "name_required": "名称为必填项",
+  "no_servers_available": "没有可用的服务器"
 }

@@ -479,5 +479,8 @@
   "password_optional_no_role": "Aucun mot de passe requis pour le rôle « Aucun rôle »",
   "password_required_for_role": "Un mot de passe est requis pour le rôle sélectionné",
   "peer_already_linked": "Ce pair est déjà lié à l'utilisateur {}",
-  "peer_already_linked_self": "Ce pair est déjà lié à cet utilisateur"
+  "peer_already_linked_self": "Ce pair est déjà lié à cet utilisateur",
+  "select_connection": "Sélectionnez une connexion",
+  "name_required": "Le nom est requis",
+  "no_servers_available": "Aucun serveur disponible"
 }

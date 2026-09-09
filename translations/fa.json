@@ -479,5 +479,8 @@
   "password_optional_no_role": "برای نقش «بدون نقش» رمز عبور لازم نیست",
   "password_required_for_role": "برای نقش انتخاب‌شده رمز عبور الزامی است",
   "peer_already_linked": "این پیر از قبل به کاربر {} متصل است",
-  "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است"
+  "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است",
+  "select_connection": "یک اتصال انتخاب کنید",
+  "name_required": "نام الزامی است",
+  "no_servers_available": "سروری در دسترس نیست"
 }
