@@ -307,7 +307,6 @@
   "management": "管理",
   "server_management": "服务器管理",
   "server_management_desc": "在您的机器上执行系统级别的操作。",
-  "server_stats_toggle": "从服务器获取并刷新 CPU、内存、磁盘和总流量数据",
   "check_server_services": "检查服务器服务",
   "reboot_server": "重启服务器",
   "clear_server": "清除服务器",

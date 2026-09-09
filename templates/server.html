@@ -1437,10 +1437,6 @@
         if (!el) return;
         el.innerHTML = `
             <div class="flex" style="flex-direction: column; gap: var(--space-sm);">
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; padding: 4px 0 8px;">
-                    <input type="checkbox" ${serverStatsEnabled() ? 'checked' : ''} onchange="toggleServerStats(this.checked)">
-                    <span>${_('server_stats_toggle')}</span>
-                </label>
                 <button class="btn btn-secondary" onclick="closeModal('managementModal'); checkServer();" style="justify-content: flex-start; padding: 12px 20px;">
                     <span style="font-size: 1.2rem; margin-right: 8px;">🔄</span> ${_('check_server_services')}
                 </button>
@@ -1630,27 +1626,7 @@
     }
 
     // ========== Server Stats ==========
-    function serverStatsEnabled() {
-        return localStorage.getItem('serverStatsEnabled') !== '0';
-    }
-
-    function toggleServerStats(on) {
-        localStorage.setItem('serverStatsEnabled', on ? '1' : '0');
-        const el = document.getElementById('serverStats');
-        if (on) {
-            loadServerStats();
-        } else if (el) {
-            el.style.display = 'none';
-            el.innerHTML = '';
-        }
-    }
-
     async function loadServerStats() {
-        if (!serverStatsEnabled()) {
-            const el = document.getElementById('serverStats');
-            if (el) { el.style.display = 'none'; el.innerHTML = ''; }
-            return;
-        }
         try {
             const stats = await apiCall(`/api/servers/${SERVER_ID}/stats`, 'POST');
             const el = document.getElementById('serverStats');

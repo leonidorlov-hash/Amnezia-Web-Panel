@@ -384,7 +384,6 @@
   "management": "Management",
   "server_management": "Server Management",
   "server_management_desc": "Perform system-level actions on your machine.",
-  "server_stats_toggle": "Fetch and refresh CPU, RAM, disk and total traffic stats from the server",
   "check_server_services": "Check the server services",
   "reboot_server": "Reboot server",
   "clear_server": "Clear server",
