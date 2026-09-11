@@ -185,7 +185,7 @@
   "create_new_conn": "ایجاد اتصال جدید",
   "link_existing_conn": "اتصال به موجود",
   "select_existing_conn": "انتخاب اتصال موجود",
-  "existing_conn_hint": "فقط اتصال‌های بدون کاربر نمایش داده می‌شوند",
+  "existing_conn_hint": "فقط اتصال‌های بدون کاربر نمایش داده می‌شوند. برای انتخاب چند مورد Ctrl را نگه دارید",
   "conn_name_panel": "نام اتصال (در پنل)",
   "user_conns_title": "اتصال‌های کاربر",
   "no_free_conns": "اتصال آزاد موجود نیست",

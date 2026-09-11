@@ -187,7 +187,7 @@
   "create_new_conn": "Create new connection",
   "link_existing_conn": "Link existing",
   "select_existing_conn": "Select existing connection",
-  "existing_conn_hint": "Only connections not linked to users will be shown",
+  "existing_conn_hint": "Only connections not linked to users will be shown. Hold Ctrl to select several",
   "conn_name_panel": "Connection name (in panel)",
   "user_conns_title": "User connections",
   "no_free_conns": "No free connections",

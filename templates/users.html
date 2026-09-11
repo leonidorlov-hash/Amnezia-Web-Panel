@@ -298,7 +298,7 @@
 
         <div class="form-group" id="ucExistingClientGroup" style="display:none;">
             <label class="form-label">{{ _('select_existing_conn') }}</label>
-            <select class="form-select" id="ucExistingClient">
+            <select class="form-select" id="ucExistingClient" multiple size="6">
                 <option value="">{{ _('loading') }}</option>
             </select>
             <div class="form-hint">{{ _('existing_conn_hint') }}</div>
@@ -804,9 +804,21 @@
         currentUserId = userId;
         document.getElementById('addUserConnTitle').textContent = `${_('add_connection')} — ${username}`;
         document.getElementById('ucName').value = `${username}_vpn`;
-        document.getElementById('ucMode').value = 'new';
+        // Restore the options used for the previous add (mode/server/protocol)
+        let prefs = null;
+        try { prefs = JSON.parse(localStorage.getItem('addUserConnPrefs') || 'null'); } catch (e) {}
+        const modeEl = document.getElementById('ucMode');
+        const serverEl = document.getElementById('ucServer');
+        if (prefs) {
+            if ([...modeEl.options].some(o => o.value === prefs.mode)) modeEl.value = prefs.mode;
+            if ([...serverEl.options].some(o => o.value === String(prefs.server))) serverEl.value = String(prefs.server);
+        } else {
+            modeEl.value = 'new';
+        }
+        updateProtocols(serverEl.value, 'ucProtocol');
+        const protoEl = document.getElementById('ucProtocol');
+        if (prefs && [...protoEl.options].some(o => o.value === prefs.protocol)) protoEl.value = prefs.protocol;
         toggleUCMode();
-        updateProtocols(document.getElementById('ucServer').value, 'ucProtocol');
         openModal('addUserConnModal');
     }
 
@@ -863,12 +875,41 @@
                 protocol: document.getElementById('ucProtocol').value,
                 name: document.getElementById('ucName').value || 'VPN Connection',
             };
+            // Remember the options for the next add
+            try {
+                localStorage.setItem('addUserConnPrefs', JSON.stringify({
+                    mode, server: document.getElementById('ucServer').value, protocol: body.protocol
+                }));
+            } catch (e) {}
 
             if (mode === 'existing') {
-                const clientId = document.getElementById('ucExistingClient').value;
-                if (!clientId) throw new Error(_('select_connection'));
-                body.client_id = clientId;
-            } else if (body.protocol === 'telemt') {
+                const selected = [...document.getElementById('ucExistingClient').selectedOptions]
+                    .map(o => o.value).filter(Boolean);
+                if (!selected.length) throw new Error(_('select_connection'));
+                let ok = 0, failed = 0, lastErr = '';
+                for (const clientId of selected) {
+                    try {
+                        await apiCall(`/api/users/${currentUserId}/connections/add`, 'POST', { ...body, client_id: clientId });
+                        ok++;
+                    } catch (e) {
+                        failed++;
+                        lastErr = e.message;
+                    }
+                }
+                if (!ok) throw new Error(lastErr || _('error'));
+                showToast(failed
+                    ? `${_('conn_linked')}: ${ok}, ${_('error')}: ${failed} (${lastErr})`
+                    : _('conn_linked') + (ok > 1 ? ` (${ok})` : ''), failed ? 'error' : 'success');
+                closeModal('addUserConnModal');
+                refreshUsersList();
+                const connsModal = document.getElementById('userConnsModal');
+                if (connsModal.classList.contains('active') && currentConnsUserId === currentUserId) {
+                    viewUserConnections(currentConnsUserId, currentConnsUsername);
+                }
+                return;
+            }
+
+            if (body.protocol === 'telemt') {
                 body.telemt_quota = document.getElementById('ucTelemtQuota').value || null;
                 body.telemt_max_ips = parseInt(document.getElementById('ucTelemtMaxIps').value) || null;
                 body.telemt_expiry = document.getElementById('ucTelemtExpiry').value || null;
@@ -878,12 +919,10 @@
             }
 
             const result = await apiCall(`/api/users/${currentUserId}/connections/add`, 'POST', body);
-            showToast(mode === 'existing' ? _('conn_linked') : _('connection_created').replace('{}', body.name), 'success');
+            showToast(_('connection_created').replace('{}', body.name), 'success');
             closeModal('addUserConnModal');
 
-            // Linking an existing peer: no config popup — the admin already
-            // has that config; just refresh the list.
-            if (result.config && mode !== 'existing') {
+            if (result.config) {
                 currentConfig = result.config;
                 currentVpnLink = result.vpn_link || '';
                 currentConfigName = document.getElementById('ucName').value.replace(/\s+/g, '_');
@@ -894,7 +933,8 @@
                 openModal('configModal');
                 generateQR(result.config, result.vpn_qr_chunks);
             }
-            setTimeout(() => window.location.reload(), 1000);
+            // Refresh the grid via AJAX — no full page reload.
+            refreshUsersList();
         } catch (err) {
             showToast(`${_('error')}: ` + err.message, 'error');
         } finally {

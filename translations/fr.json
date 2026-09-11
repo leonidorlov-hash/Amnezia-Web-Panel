@@ -185,7 +185,7 @@
   "create_new_conn": "Créer nouvelle connexion",
   "link_existing_conn": "Lier existante",
   "select_existing_conn": "Sélectionner connexion",
-  "existing_conn_hint": "Seules les connexions libres sont affichées",
+  "existing_conn_hint": "Seules les connexions libres sont affichées. Maintenez Ctrl pour en sélectionner plusieurs",
   "conn_name_panel": "Nom (dans le panneau)",
   "user_conns_title": "Connexions utilisateur",
   "no_free_conns": "Aucune connexion libre",

@@ -185,7 +185,7 @@
   "create_new_conn": "创建新连接",
   "link_existing_conn": "关联现有连接",
   "select_existing_conn": "选择现有连接",
-  "existing_conn_hint": "仅显示尚未关联用户的连接",
+  "existing_conn_hint": "仅显示尚未关联用户的连接。按住 Ctrl 可多选",
   "conn_name_panel": "连接名称 (面板显示)",
   "user_conns_title": "用户连接列表",
   "no_free_conns": "无可用空闲连接",
