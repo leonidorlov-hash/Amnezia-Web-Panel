@@ -567,5 +567,7 @@
   "conn_unlinked": "连接已解绑",
   "awg_dns6_hint": "当隧道为双栈（IPv4+IPv6）时用于客户端密钥",
   "username_empty": "用户名不能为空",
-  "invalid_role": "角色无效"
+  "invalid_role": "角色无效",
+  "assign_user": "用户",
+  "no_user_option": "— 不关联 —"
 }

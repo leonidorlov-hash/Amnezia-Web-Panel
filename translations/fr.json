@@ -567,5 +567,7 @@
   "conn_unlinked": "Connexion dissociée",
   "awg_dns6_hint": "Utilisé dans les clés quand le tunnel est dual-stack (IPv4+IPv6)",
   "username_empty": "Le nom d'utilisateur ne peut pas être vide",
-  "invalid_role": "Rôle invalide"
+  "invalid_role": "Rôle invalide",
+  "assign_user": "Utilisateur",
+  "no_user_option": "— ne pas lier —"
 }

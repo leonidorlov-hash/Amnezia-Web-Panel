@@ -600,5 +600,7 @@
   "conn_unlinked": "Connection unlinked",
   "awg_dns6_hint": "Used in client keys when the tunnel is dual-stack (IPv4+IPv6)",
   "username_empty": "Username must not be empty",
-  "invalid_role": "Invalid role"
+  "invalid_role": "Invalid role",
+  "assign_user": "User",
+  "no_user_option": "— do not link —"
 }

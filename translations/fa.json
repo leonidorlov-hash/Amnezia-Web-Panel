@@ -567,5 +567,7 @@
   "conn_unlinked": "اتصال لغو شد",
   "awg_dns6_hint": "وقتی تونل دوپشته (IPv4+IPv6) است در کلیدها استفاده می‌شود",
   "username_empty": "نام کاربری نمی‌تواند خالی باشد",
-  "invalid_role": "نقش نامعتبر"
+  "invalid_role": "نقش نامعتبر",
+  "assign_user": "کاربر",
+  "no_user_option": "— بدون اتصال —"
 }

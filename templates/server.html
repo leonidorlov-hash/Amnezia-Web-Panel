@@ -3204,7 +3204,7 @@
                 const canShowConfig = proto === 'xray' || true; // always show 📄 button
 
                 listEl.innerHTML += `
-                    <div class="client-item" style="${disabledStyle}" data-maxspeed="${maxSpeed}">
+                    <div class="client-item" style="${disabledStyle}" data-maxspeed="${maxSpeed}" data-assigned-user="${client.assigned_user_id || ''}">
                         <div class="client-info">
                             <div class="client-avatar${client._online ? ' avatar-online' : ''}">${initial}</div>
                             <div>
@@ -3410,6 +3410,7 @@
         const proto = document.getElementById('connProtoSelect').value;
         const isAwg = proto.startsWith('awg') || protoBase(proto) === 'wireguard';
         const curSpeed = item.dataset.maxspeed || '0';
+        const currentAssigned = item.dataset.assignedUser || '';
         nameEl.innerHTML = `
             <span class="rename-editor" style="display:inline-flex;gap:12px;align-items:flex-end;flex-wrap:wrap;width:100%;">
                 <label style="display:flex;flex-direction:column;gap:2px;font-size:0.7rem;opacity:.7;flex:1;min-width:140px;">
@@ -3420,14 +3421,40 @@
                     ${_('speed_limit_unlim')}
                     <input type="number" class="form-input rename-speed" min="0" step="0.1" style="padding:2px 8px;font-size:0.85rem;width:100%;height:auto;" value="${curSpeed}" placeholder="∞">
                 </label>` : ''}
+                <label style="display:flex;flex-direction:column;gap:2px;font-size:0.7rem;opacity:.7;flex:1;min-width:140px;">
+                    ${_('assign_user')}
+                    <select class="form-select rename-user" style="padding:2px 8px;font-size:0.85rem;width:100%;height:auto;">
+                        <option value="">${_('loading')}</option>
+                    </select>
+                </label>
                 <button class="btn btn-secondary btn-sm btn-icon" title="${_('save')}">✔</button>
                 <button class="btn btn-secondary btn-sm btn-icon rename-cancel" title="${_('cancel')}">✖</button>
             </span>
         `;
         const input = nameEl.querySelector('input');
         const speedInput = nameEl.querySelector('.rename-speed');
+        const userSelect = nameEl.querySelector('.rename-user');
         const saveBtn = nameEl.querySelector('button:not(.rename-cancel)');
         const cancelBtn = nameEl.querySelector('.rename-cancel');
+        // Fill the user list once; the 5s poll already skips open editors, so
+        // the selection survives until Save/Cancel.
+        (async () => {
+            try {
+                const ud = await apiCall('/api/users?size=1000');
+                if (!userSelect.isConnected) return;
+                const users = (ud.users || []).slice().sort((a, b) => {
+                    const an = a.role === 'none' ? 0 : 1, bn = b.role === 'none' ? 0 : 1;
+                    return an - bn || String(a.username).localeCompare(String(b.username));
+                });
+                userSelect.innerHTML = users.map(u =>
+                    `<option value="${u.id}" ${u.id === currentAssigned ? 'selected' : ''}>${escapeHtml(u.username)} (${u.role === 'none' ? _('role_none_badge') : u.role})</option>`
+                ).join('') + `<option value="">${_('no_user_option')}</option>`;
+                // Default: the linked user; otherwise the first no-role user.
+                if (!currentAssigned) userSelect.selectedIndex = 0;
+            } catch (e) {
+                if (userSelect.isConnected) userSelect.innerHTML = `<option value="">${_('error')}</option>`;
+            }
+        })();
         const doSave = async () => {
             // Immediate busy feedback so a second click is impossible and the
             // user sees the save is in flight (rename + tc apply takes 2-4s).
@@ -3435,8 +3462,10 @@
             cancelBtn.disabled = true;
             input.disabled = true;
             if (speedInput) speedInput.disabled = true;
+            if (userSelect) userSelect.disabled = true;
             saveBtn.innerHTML = '<span class="spinner" style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.25);border-top-color:#1c1c30;border-radius:50%;animation:spin 0.6s linear infinite;"></span>';
-            await saveRenameConnection(clientId, input.value, speedInput ? (parseFloat(speedInput.value) || 0) : -1);
+            await saveRenameConnection(clientId, input.value, speedInput ? (parseFloat(speedInput.value) || 0) : -1,
+                userSelect ? userSelect.value : undefined, currentAssigned);
             // On success loadConnections() rerenders the list and wipes this
             // editor; restore only when it is still in the DOM (error path).
             if (saveBtn.isConnected) {
@@ -3444,6 +3473,7 @@
                 cancelBtn.disabled = false;
                 input.disabled = false;
                 if (speedInput) speedInput.disabled = false;
+                if (userSelect) userSelect.disabled = false;
                 saveBtn.innerHTML = '✔';
             }
         };
@@ -3463,7 +3493,7 @@
         input.select();
     }
 
-    async function saveRenameConnection(clientId, rawName, maxSpeed = -1) {
+    async function saveRenameConnection(clientId, rawName, maxSpeed = -1, newUserId, currentAssigned) {
         const proto = document.getElementById('connProtoSelect').value;
         const newName = (rawName || '').trim();
         if (!newName) {
@@ -3478,6 +3508,26 @@
                 showToast(_('error') + ': ' + result.speed_warning, 'error');
             } else {
                 showToast(_('connection_renamed'), 'success');
+            }
+            // User (re)link: only when the selection actually changed.
+            if (newUserId !== undefined && newUserId !== (currentAssigned || '')) {
+                try {
+                    if (currentAssigned) {
+                        await apiCall(`/api/users/${currentAssigned}/connections/unlink`, 'POST', {
+                            server_id: SERVER_ID, protocol: proto, client_id: clientId,
+                        });
+                    }
+                    if (newUserId) {
+                        await apiCall(`/api/users/${newUserId}/connections/add`, 'POST', {
+                            server_id: SERVER_ID, protocol: proto, client_id: clientId, name: newName,
+                        });
+                        showToast(_('conn_linked'), 'success');
+                    } else {
+                        showToast(_('conn_unlinked'), 'success');
+                    }
+                } catch (linkErr) {
+                    showToast(_('error') + ': ' + linkErr.message, 'error');
+                }
             }
             // If the config modal is open for this connection, retitle it too.
             if (currentConfigClientId === clientId &&
