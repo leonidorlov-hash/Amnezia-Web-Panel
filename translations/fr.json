@@ -561,5 +561,7 @@
   "invalid_role": "Rôle invalide",
   "unlink_key_title": "Dissocier la clé {} de l'utilisateur « {} » ?",
   "unlink_confirm": "Vraiment dissocier ?!",
-  "conn_unlinked": "Connexion dissociée"
+  "conn_unlinked": "Connexion dissociée",
+  "assign_user": "Utilisateur",
+  "no_user_option": "— ne pas lier —"
 }

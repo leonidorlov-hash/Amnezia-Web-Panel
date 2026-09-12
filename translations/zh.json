@@ -561,5 +561,7 @@
   "invalid_role": "角色无效",
   "unlink_key_title": "将密钥 {} 从用户“{}”解绑？",
   "unlink_confirm": "确定解绑？！",
-  "conn_unlinked": "连接已解绑"
+  "conn_unlinked": "连接已解绑",
+  "assign_user": "用户",
+  "no_user_option": "— 不绑定 —"
 }

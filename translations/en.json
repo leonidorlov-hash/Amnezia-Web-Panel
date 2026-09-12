@@ -594,5 +594,7 @@
   "invalid_role": "Invalid role",
   "unlink_key_title": "Unlink key {} from user \"{}\"?",
   "unlink_confirm": "Really unlink?!",
-  "conn_unlinked": "Connection unlinked"
+  "conn_unlinked": "Connection unlinked",
+  "assign_user": "User",
+  "no_user_option": "— do not link —"
 }
