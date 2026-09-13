@@ -1021,6 +1021,30 @@ done
         else:
             results.append(f"Kernel module failed, userspace mode (amneziawg-go): {km.split(':', 1)[-1].strip()}")
 
+        # Step 2.6: warn about sibling AWG containers whose image still carries
+        # awg-tools of another version than the host kernel module - such a
+        # pair fails setconf with EINVAL and the tunnel silently stays down
+        # (the new start.sh self-heals via userspace, but a stale image should
+        # be rebuilt by reinstalling that instance).
+        module_v = self._host_awg_module_version()
+        if module_v and base_proto in (self.AWG, self.AWG2, self.AWG3):
+            out, _, _ = self.ssh.run_sudo_command(
+                "docker ps --format '{{.Names}}' | grep -E '^amnezia-awg' || true"
+            )
+            for cname in out.split():
+                if cname == self._container_name(protocol_type):
+                    continue
+                tv, _, _ = self.ssh.run_sudo_command(
+                    f"docker exec {cname} sh -c \"awg --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1\" 2>/dev/null"
+                )
+                tools_v = tv.strip()
+                if tools_v and tools_v != module_v:
+                    results.append(
+                        f"! {cname}: awg-tools {tools_v} vs kernel module {module_v} mismatch - "
+                        f"the tunnel self-heals in userspace mode on restart, but reinstall "
+                        f"this instance to rebuild its image and keep the fast kernel datapath."
+                    )
+
         # Step 3: Remove old container if exists
         if self.check_protocol_installed(protocol_type):
             results.append("Removing old container...")
@@ -1363,11 +1387,30 @@ SUBNET6=$(grep '^Address' {config_path} | head -1 | tr ',' '\n' | grep ':' | sed
 # kill daemons in case of restart
 {quick_bin} down {config_path} 2>/dev/null
 
+IFACE=$(basename {config_path} .conf)
+
 # start daemons if configured
-if [ -f {config_path} ]; then {quick_bin} up {config_path}; fi
+if [ -f {config_path} ]; then
+  {quick_bin} up {config_path}
+  # Self-heal: when awg-tools and the host kernel module disagree on the
+  # version (e.g. module upgraded to 3.1 while the image still carries old
+  # tools), setconf fails with EINVAL and the tunnel silently stays down.
+  # Detect the mismatch and retry in userspace mode (amneziawg-go) - slower,
+  # but the clients keep their internet.
+  if ! ip link show "$IFACE" >/dev/null 2>&1; then
+    TOOLS_V=$(awg --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1)
+    MOD_V=$(cat /sys/module/amneziawg/version 2>/dev/null || true)
+    if [ -n "$MOD_V" ] && [ -n "$TOOLS_V" ] && [ "$TOOLS_V" != "$MOD_V" ]; then
+      echo "! awg-tools $TOOLS_V vs kernel module $MOD_V mismatch"
+      if grep -q WG_FORCE_USERSPACE "$(command -v {quick_bin})" 2>/dev/null; then
+        echo "! retrying in userspace mode (amneziawg-go)"
+        WG_FORCE_USERSPACE=1 {quick_bin} up {config_path}
+      fi
+    fi
+  fi
+fi
 
 # Allow traffic on the TUN interface
-IFACE=$(basename {config_path} .conf)
 iptables -A INPUT -i $IFACE -j ACCEPT
 iptables -A FORWARD -i $IFACE -j ACCEPT
 iptables -A OUTPUT -o $IFACE -j ACCEPT

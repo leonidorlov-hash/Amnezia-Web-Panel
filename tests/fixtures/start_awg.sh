@@ -101,11 +101,30 @@ x_exit_sync() {
 # kill daemons in case of restart
 awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null
 
+IFACE=$(basename /opt/amnezia/awg/awg0.conf .conf)
+
 # start daemons if configured
-if [ -f /opt/amnezia/awg/awg0.conf ]; then awg-quick up /opt/amnezia/awg/awg0.conf; fi
+if [ -f /opt/amnezia/awg/awg0.conf ]; then
+  awg-quick up /opt/amnezia/awg/awg0.conf
+  # Self-heal: when awg-tools and the host kernel module disagree on the
+  # version (e.g. module upgraded to 3.1 while the image still carries old
+  # tools), setconf fails with EINVAL and the tunnel silently stays down.
+  # Detect the mismatch and retry in userspace mode (amneziawg-go) - slower,
+  # but the clients keep their internet.
+  if ! ip link show "$IFACE" >/dev/null 2>&1; then
+    TOOLS_V=$(awg --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    MOD_V=$(cat /sys/module/amneziawg/version 2>/dev/null || true)
+    if [ -n "$MOD_V" ] && [ -n "$TOOLS_V" ] && [ "$TOOLS_V" != "$MOD_V" ]; then
+      echo "! awg-tools $TOOLS_V vs kernel module $MOD_V mismatch"
+      if grep -q WG_FORCE_USERSPACE "$(command -v awg-quick)" 2>/dev/null; then
+        echo "! retrying in userspace mode (amneziawg-go)"
+        WG_FORCE_USERSPACE=1 awg-quick up /opt/amnezia/awg/awg0.conf
+      fi
+    fi
+  fi
+fi
 
 # Allow traffic on the TUN interface
-IFACE=$(basename /opt/amnezia/awg/awg0.conf .conf)
 iptables -A INPUT -i $IFACE -j ACCEPT
 iptables -A FORWARD -i $IFACE -j ACCEPT
 iptables -A OUTPUT -o $IFACE -j ACCEPT
