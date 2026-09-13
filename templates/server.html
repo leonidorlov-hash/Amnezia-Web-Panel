@@ -3110,6 +3110,9 @@
         emptyEl.classList.add('hidden');
         try {
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
+            // The rename editor may have opened while this poll was in flight —
+            // re-rendering now would destroy it mid-typing.
+            if (isPoll && listEl.querySelector('.rename-editor')) return;
             loading.style.display = 'none';
             if (!data.clients || data.clients.length === 0) {
                 listEl.innerHTML = '';
@@ -3425,18 +3428,20 @@
             const result = await apiCall(`/api/servers/${SERVER_ID}/connections/rename`, 'POST', {
                 protocol: proto, client_id: clientId, new_name: newName, max_speed: maxSpeed,
             });
-            if (result.speed_warning) {
-                showToast(_('error') + ': ' + result.speed_warning, 'error');
-            } else {
-                showToast(_('connection_renamed'), 'success');
-            }
+            // Show the toast AFTER loadConnections() re-renders the list and
+            // closes the editor — otherwise it pops up while the edit UI is
+            // still on screen.
+            const toast = result.speed_warning
+                ? [_('error') + ': ' + result.speed_warning, 'error']
+                : [_('connection_renamed'), 'success'];
             // If the config modal is open for this connection, retitle it too.
             if (currentConfigClientId === clientId &&
                 document.getElementById('configModal').classList.contains('active')) {
                 document.getElementById('configModalTitle').textContent = `${_('config')} — ${result.name}`;
                 currentConfigName = result.name.replace(/\s+/g, '_');
             }
-            loadConnections();
+            await loadConnections();
+            showToast(toast[0], toast[1]);
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
         }
@@ -3542,7 +3547,23 @@
                 protocol: proto, client_id: clientId, enable: enable,
             });
             showToast(enable ? _('connection_enabled') : _('connection_disabled'), 'success');
-            await loadConnections();
+            // Update just this row in place — no full list reload. The 5s
+            // poll reconciles speeds/badges anyway.
+            if (row && btn) {
+                row.style.opacity = enable ? '' : '0.5';
+                btn.classList.toggle('peer-toggle-off', !enable);
+                btn.title = enable ? _('stop') : _('starting');
+                btn.setAttribute('onclick', `toggleConnection('${escapeJs(clientId)}', ${!enable}, this)`);
+                const meta = row.querySelector('.client-meta');
+                if (meta) {
+                    const offBadge = meta.querySelector('.badge-danger');
+                    if (!enable && !offBadge) {
+                        meta.insertAdjacentHTML('afterbegin', `<span class="badge badge-danger" style="font-size:0.65rem">${_('stop')}</span>`);
+                    } else if (enable && offBadge) {
+                        offBadge.remove();
+                    }
+                }
+            }
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
         } finally {
