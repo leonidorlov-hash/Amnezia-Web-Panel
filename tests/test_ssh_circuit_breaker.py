@@ -76,6 +76,21 @@ class CircuitBreakerTests(unittest.TestCase):
         self.assertEqual(once.call_count, 2)
         self.assertEqual(ssh._connect_fail_count, 1)
 
+    def test_custom_cooldown_base_scales_the_ladder(self):
+        ssh = SSHManager(host='203.0.113.1', port=22, username='root',
+                         password='x', connect_cooldown_base=10)
+        self.assertEqual(ssh._connect_cooldown, 10.0)
+        with mock.patch.object(SSHManager, '_connect_once',
+                               side_effect=OSError('timed out')):
+            expected = [10.0, 20.0, 40.0, 80.0, 160.0, 300.0]
+            for want in expected:
+                with self.assertRaises(OSError):
+                    ssh.connect()
+                self.assertEqual(ssh._connect_cooldown, want)
+        with mock.patch.object(SSHManager, '_connect_once', return_value=None):
+            ssh.connect()
+        self.assertEqual(ssh._connect_cooldown, 10.0)
+
 
 if __name__ == '__main__':
     unittest.main()

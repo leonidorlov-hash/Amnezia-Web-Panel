@@ -558,5 +558,7 @@
   "password_optional_no_role": "Aucun mot de passe requis pour le rôle « Aucun rôle »",
   "password_required_for_role": "Un mot de passe est requis pour le rôle sélectionné",
   "username_empty": "Le nom d'utilisateur ne peut pas être vide",
-  "invalid_role": "Rôle invalide"
+  "invalid_role": "Rôle invalide",
+  "ssh_cooldown_title": "SSH cooldown (s)",
+  "ssh_cooldown_hint": "Délai initial avant reconnexion à un serveur injoignable. Ne modifiez pas si le serveur fonctionne correctement."
 }

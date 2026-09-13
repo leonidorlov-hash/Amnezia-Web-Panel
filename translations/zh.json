@@ -558,5 +558,7 @@
   "password_optional_no_role": "“无角色”角色无需密码",
   "password_required_for_role": "所选角色必须设置密码",
   "username_empty": "用户名不能为空",
-  "invalid_role": "角色无效"
+  "invalid_role": "角色无效",
+  "ssh_cooldown_title": "SSH 冷却时间(秒)",
+  "ssh_cooldown_hint": "重新连接不可达服务器前的初始延迟。如果服务器工作正常,请勿更改。"
 }

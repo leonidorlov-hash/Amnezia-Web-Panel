@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 class SSHManager:
     """Manages SSH connections and command execution on remote servers."""
 
-    def __init__(self, host, port, username, password=None, private_key=None):
+    def __init__(self, host, port, username, password=None, private_key=None,
+                 connect_cooldown_base=30.0):
         self.host = host
         self.port = int(port)
         self.username = username
@@ -37,10 +38,12 @@ class SSHManager:
         # Circuit breaker: after a failed connect, do not hammer the dead
         # server on every request (each attempt costs up to `timeout` seconds
         # and can exhaust the web worker pool when several servers are down).
-        # Consecutive failures grow the cooldown 30s -> 60s -> 120s -> ... up
-        # to 300s; the first successful connect resets it back to 30s.
+        # Consecutive failures grow the cooldown base -> 2x -> 4x -> ... up
+        # to 300s; the first successful connect resets it back to base.
+        # Base is configurable per server (data.json: ssh_cooldown_base).
+        self._connect_cooldown_base = float(connect_cooldown_base or 30.0)
         self._last_connect_fail = 0.0
-        self._connect_cooldown = 30.0
+        self._connect_cooldown = self._connect_cooldown_base
         self._connect_fail_count = 0
         self._connect_cooldown_max = 300.0
         # Pooled managers (shared via app.get_ssh) must ignore the legacy
@@ -79,13 +82,13 @@ class SSHManager:
         self._connect_fail_count += 1
         self._last_connect_fail = time.time()
         self._connect_cooldown = min(
-            30.0 * (2 ** (self._connect_fail_count - 1)),
+            self._connect_cooldown_base * (2 ** (self._connect_fail_count - 1)),
             self._connect_cooldown_max)
 
     def _reset_connect_failures(self):
         """First successful connect closes the breaker again."""
         self._connect_fail_count = 0
-        self._connect_cooldown = 30.0
+        self._connect_cooldown = self._connect_cooldown_base
         self._last_connect_fail = 0.0
 
     def _connect_once(self):

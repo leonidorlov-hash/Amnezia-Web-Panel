@@ -292,6 +292,7 @@ _SSH_POOL_LOCK = threading.Lock()
 
 def get_ssh(server):
     key = (server['host'], int(server.get('ssh_port', 22)), server['username'])
+    cooldown_base = float(server.get('ssh_cooldown_base') or 30)
     with _SSH_POOL_LOCK:
         ssh = _SSH_POOL.get(key)
         if ssh is None:
@@ -301,8 +302,11 @@ def get_ssh(server):
                 username=server['username'],
                 password=server.get('password'),
                 private_key=server.get('private_key'),
+                connect_cooldown_base=cooldown_base,
             )
             _SSH_POOL[key] = ssh
+        # Apply edits without dropping the pooled connection.
+        ssh._connect_cooldown_base = cooldown_base
         ssh.pooled = True
     ssh.ensure_connected()
     return ssh
@@ -4349,6 +4353,26 @@ def api_server_config(request: Request, server_id: int, req: ProtocolRequest):
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
+@app.post('/api/servers/{server_id}/ssh_cooldown', tags=["Servers"])
+async def api_ssh_cooldown(request: Request, server_id: int):
+    """Set the per-server SSH circuit-breaker base cooldown (seconds)."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        body = await request.json()
+        seconds = float(body.get('seconds', 30))
+    except Exception:
+        return JSONResponse({'error': 'Invalid value'}, status_code=400)
+    if not (5 <= seconds <= 300):
+        return JSONResponse({'error': 'Value must be between 5 and 300 seconds'}, status_code=400)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    data['servers'][server_id]['ssh_cooldown_base'] = seconds
+    save_data(data)
+    return {'ok': True, 'ssh_cooldown_base': seconds}
+
+
 @app.post('/api/servers/{server_id}/host_tuning', tags=["Protocols"])
 def api_host_tuning(request: Request, server_id: int):
     """Server-level network tuning summary (host sysctls + AWG containers)."""
@@ -4364,6 +4388,7 @@ def api_host_tuning(request: Request, server_id: int):
         mgr = AWGManager(ssh)
         info = mgr.get_host_tuning()
         ssh.disconnect()
+        info['panel'] = {'ssh_cooldown_base': float(server.get('ssh_cooldown_base') or 30)}
         return info
     except Exception as e:
         logger.exception("Error getting host tuning info")

@@ -1252,6 +1252,7 @@
 <script src="/static/vendor/codemirror/mode/htmlmixed/htmlmixed.min.js"></script>
 <script>
     const SERVER_ID = {{ server_id }};
+    let SSH_COOLDOWN_BASE = {{ (server.get('ssh_cooldown_base') or 30) | tojson }};
     document.body.dataset.serverUid = {{ (server.uid or '') | tojson }};
     const SERVER_HOST = "{{ server.host }}";
     const CUSTOM_PROTO_NAMES = {
@@ -1439,8 +1440,38 @@
                 <button class="btn btn-danger" onclick="closeModal('managementModal'); deleteServer();" style="justify-content: flex-start; padding: 12px 20px;">
                     <span class="btn-text-with-icon">${ICON_TRASH}</span> ${_('remove_server')}
                 </button>
+                <div style="margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border);">
+                    <label for="sshCooldownInput" style="display:block; font-size:0.85rem; margin-bottom:6px;">${_('ssh_cooldown_title')}</label>
+                    <div class="flex" style="gap:8px;">
+                        <input class="form-input" id="sshCooldownInput" type="number" min="5" max="300" step="1" value="${SSH_COOLDOWN_BASE}" style="max-width:120px;">
+                        <button class="btn btn-secondary btn-sm" onclick="saveSshCooldown()" id="sshCooldownSaveBtn">💾</button>
+                    </div>
+                    <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">${_('ssh_cooldown_hint')}</div>
+                </div>
             </div>
         `;
+    }
+
+    async function saveSshCooldown() {
+        const input = document.getElementById('sshCooldownInput');
+        const btn = document.getElementById('sshCooldownSaveBtn');
+        if (!input) return;
+        const seconds = parseFloat(input.value);
+        if (!Number.isFinite(seconds) || seconds < 5 || seconds > 300) {
+            showToast(_('ssh_cooldown_title') + ': 5–300', 'error');
+            return;
+        }
+        if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>'; }
+        try {
+            const res = await apiCall(`/api/servers/${SERVER_ID}/ssh_cooldown`, 'POST', { seconds });
+            SSH_COOLDOWN_BASE = res.ssh_cooldown_base;
+            input.value = res.ssh_cooldown_base;
+            showToast('✓', 'success');
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '💾'; }
+        }
     }
 
     function openManagementModal() {
@@ -2107,6 +2138,9 @@
         let html = '';
         const h = t.host || {};
         html += `<div style="opacity:.85;font-weight:600;margin-bottom:2px;">Host</div>`;
+        if (t.panel && t.panel.ssh_cooldown_base != null) {
+            html += row('ssh cooldown (panel)', `${t.panel.ssh_cooldown_base}s`);
+        }
         html += row('congestion control', h.cc);
         html += row('qdisc', h.qdisc);
         html += row('conntrack', `${h.conntrack_count || 0} / ${h.conntrack || '—'}`);
