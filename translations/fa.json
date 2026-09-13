@@ -185,7 +185,7 @@
   "create_new_conn": "ایجاد اتصال جدید",
   "link_existing_conn": "اتصال به موجود",
   "select_existing_conn": "انتخاب اتصال موجود",
-  "existing_conn_hint": "فقط اتصال‌های بدون کاربر نمایش داده می‌شوند",
+  "existing_conn_hint": "فقط اتصال‌های بدون کاربر نمایش داده می‌شوند. برای انتخاب چند مورد Ctrl را نگه دارید",
   "conn_name_panel": "نام اتصال (در پنل)",
   "user_conns_title": "اتصال‌های کاربر",
   "no_free_conns": "اتصال آزاد موجود نیست",
@@ -558,5 +558,7 @@
   "password_optional_no_role": "برای نقش «بدون نقش» رمز عبور لازم نیست",
   "password_required_for_role": "برای نقش انتخاب‌شده رمز عبور الزامی است",
   "username_empty": "نام کاربری نمی‌تواند خالی باشد",
-  "invalid_role": "نقش نامعتبر"
+  "invalid_role": "نقش نامعتبر",
+  "peer_already_linked": "این پیر از قبل به کاربر {} متصل است",
+  "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است"
 }
