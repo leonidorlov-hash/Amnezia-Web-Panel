@@ -596,5 +596,7 @@
   "unlink_confirm": "Really unlink?!",
   "conn_unlinked": "Connection unlinked",
   "assign_user": "User",
-  "no_user_option": "— do not link —"
+  "no_user_option": "— do not link —",
+  "stop_peer_title": "Stop",
+  "start_peer_title": "Enable"
 }

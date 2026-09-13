@@ -596,5 +596,7 @@
   "unlink_confirm": "Точно отвязать ?!",
   "conn_unlinked": "Подключение отвязано",
   "assign_user": "Пользователь",
-  "no_user_option": "— не привязывать —"
+  "no_user_option": "— не привязывать —",
+  "stop_peer_title": "Остановить",
+  "start_peer_title": "Включить"
 }

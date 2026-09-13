@@ -3184,7 +3184,7 @@
                 const disabledStyle = enabled ? '' : 'opacity:0.5;';
                 // 💡 is used for both states; the "off" look lives in CSS (.peer-toggle-off)
                 const toggleClass = enabled ? 'peer-toggle' : 'peer-toggle peer-toggle-off';
-                const toggleTitle = enabled ? _('stop') : _('starting');
+                const toggleTitle = enabled ? _('stop_peer_title') : _('start_peer_title');
                 // Show config button for all WireGuard-based clients.
                 // If clientPrivateKey is missing (created via native app), we show a warning instead.
                 const canShowConfig = proto === 'xray' || true; // always show 📄 button
@@ -3433,11 +3433,12 @@
                     const an = a.role === 'none' ? 0 : 1, bn = b.role === 'none' ? 0 : 1;
                     return an - bn || String(a.username).localeCompare(String(b.username));
                 });
-                userSelect.innerHTML = users.map(u =>
+                // "No link" first and selected by default: opening the editor
+                // must never force a user assignment on save.
+                userSelect.innerHTML = `<option value="">${_('no_user_option')}</option>` + users.map(u =>
                     `<option value="${u.id}" ${u.id === currentAssigned ? 'selected' : ''}>${escapeHtml(u.username)} (${u.role === 'none' ? _('role_none_badge') : u.role})</option>`
-                ).join('') + `<option value="">${_('no_user_option')}</option>`;
-                // Default: the linked user; otherwise the first no-role user.
-                if (!currentAssigned) userSelect.selectedIndex = 0;
+                ).join('');
+                if (currentAssigned) userSelect.value = currentAssigned;
             } catch (e) {
                 if (userSelect.isConnected) userSelect.innerHTML = `<option value="">${_('error')}</option>`;
             }

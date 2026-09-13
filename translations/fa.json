@@ -563,5 +563,7 @@
   "unlink_confirm": "واقعاً لغو اتصال شود؟!",
   "conn_unlinked": "اتصال لغو شد",
   "assign_user": "کاربر",
-  "no_user_option": "— بدون اتصال —"
+  "no_user_option": "— بدون اتصال —",
+  "stop_peer_title": "توقف",
+  "start_peer_title": "فعال‌سازی"
 }

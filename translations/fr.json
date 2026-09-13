@@ -563,5 +563,7 @@
   "unlink_confirm": "Vraiment dissocier ?!",
   "conn_unlinked": "Connexion dissociée",
   "assign_user": "Utilisateur",
-  "no_user_option": "— ne pas lier —"
+  "no_user_option": "— ne pas lier —",
+  "stop_peer_title": "Arrêter",
+  "start_peer_title": "Activer"
 }
