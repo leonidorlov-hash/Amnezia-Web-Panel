@@ -419,7 +419,7 @@ a:hover {
 }
 
 .btn-sm {
-    padding: 6px 14px;
+    padding: 6px 12px;
     font-size: 0.8rem;
     border-radius: var(--radius-sm);
 }
@@ -968,10 +968,6 @@ a:hover {
 
 #userConnsModal .modal {
     max-width: 960px;
-}
-
-.page--servers .btn-sm {
-    padding: 6px 12px;
 }
 
 .modal-header {

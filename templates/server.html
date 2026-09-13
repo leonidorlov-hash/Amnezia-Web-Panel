@@ -3124,6 +3124,9 @@
         emptyEl.classList.add('hidden');
         try {
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
+            // The rename editor may have opened while this poll was in flight —
+            // re-rendering now would destroy it mid-typing.
+            if (isPoll && listEl.querySelector('.rename-editor')) return;
             loading.style.display = 'none';
             if (!data.clients || data.clients.length === 0) {
                 listEl.innerHTML = '';
@@ -3504,10 +3507,14 @@
             const result = await apiCall(`/api/servers/${SERVER_ID}/connections/rename`, 'POST', {
                 protocol: proto, client_id: clientId, new_name: newName, max_speed: maxSpeed,
             });
+            // Collect toasts and show them AFTER loadConnections() re-renders
+            // the list and closes the editor — otherwise the success toast
+            // appears while the edit UI is still on screen.
+            const toasts = [];
             if (result.speed_warning) {
-                showToast(_('error') + ': ' + result.speed_warning, 'error');
+                toasts.push([_('error') + ': ' + result.speed_warning, 'error']);
             } else {
-                showToast(_('connection_renamed'), 'success');
+                toasts.push([_('connection_renamed'), 'success']);
             }
             // User (re)link: only when the selection actually changed.
             if (newUserId !== undefined && newUserId !== (currentAssigned || '')) {
@@ -3521,12 +3528,12 @@
                         await apiCall(`/api/users/${newUserId}/connections/add`, 'POST', {
                             server_id: SERVER_ID, protocol: proto, client_id: clientId, name: newName,
                         });
-                        showToast(_('conn_linked'), 'success');
+                        toasts.push([_('conn_linked'), 'success']);
                     } else {
-                        showToast(_('conn_unlinked'), 'success');
+                        toasts.push([_('conn_unlinked'), 'success']);
                     }
                 } catch (linkErr) {
-                    showToast(_('error') + ': ' + linkErr.message, 'error');
+                    toasts.push([_('error') + ': ' + linkErr.message, 'error']);
                 }
             }
             // If the config modal is open for this connection, retitle it too.
@@ -3535,7 +3542,8 @@
                 document.getElementById('configModalTitle').textContent = `${_('config')} — ${result.name}`;
                 currentConfigName = result.name.replace(/\s+/g, '_');
             }
-            loadConnections();
+            await loadConnections();
+            toasts.forEach(([msg, kind]) => showToast(msg, kind));
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
         }
