@@ -571,5 +571,7 @@
   "assign_user": "Utilisateur",
   "no_user_option": "— ne pas lier —",
   "stop_peer_title": "Arrêter",
-  "start_peer_title": "Activer"
+  "start_peer_title": "Activer",
+  "ssh_cooldown_title": "SSH cooldown (s)",
+  "ssh_cooldown_hint": "Délai initial avant reconnexion à un serveur injoignable. Ne modifiez pas si le serveur fonctionne correctement."
 }

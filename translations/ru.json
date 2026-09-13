@@ -604,5 +604,7 @@
   "assign_user": "Пользователь",
   "no_user_option": "— не привязывать —",
   "stop_peer_title": "Остановить",
-  "start_peer_title": "Включить"
+  "start_peer_title": "Включить",
+  "ssh_cooldown_title": "SSH cooldown (сек)",
+  "ssh_cooldown_hint": "Начальная пауза перед повторным подключением к недоступному серверу. Не меняйте, если сервер работает корректно."
 }

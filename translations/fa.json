@@ -571,5 +571,7 @@
   "assign_user": "کاربر",
   "no_user_option": "— بدون اتصال —",
   "stop_peer_title": "توقف",
-  "start_peer_title": "فعال‌سازی"
+  "start_peer_title": "فعال‌سازی",
+  "ssh_cooldown_title": "SSH cooldown (ثانیه)",
+  "ssh_cooldown_hint": "تأخیر اولیه قبل از اتصال مجدد به سرور در دسترس‌نبوده. اگر سرور درست کار می‌کند، تغییر ندهید."
 }

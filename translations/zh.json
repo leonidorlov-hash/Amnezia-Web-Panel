@@ -571,5 +571,7 @@
   "assign_user": "用户",
   "no_user_option": "— 不关联 —",
   "stop_peer_title": "停止",
-  "start_peer_title": "启用"
+  "start_peer_title": "启用",
+  "ssh_cooldown_title": "SSH 冷却时间(秒)",
+  "ssh_cooldown_hint": "重新连接不可达服务器前的初始延迟。如果服务器工作正常,请勿更改。"
 }
