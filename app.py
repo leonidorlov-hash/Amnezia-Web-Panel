@@ -5210,6 +5210,34 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
+class UnlinkConnectionRequest(BaseModel):
+    server_id: int
+    protocol: str = 'awg'
+    client_id: str = ''
+
+
+@app.post('/api/users/{user_id}/connections/unlink', tags=["Users"])
+async def api_unlink_user_connection(request: Request, user_id: str, req: UnlinkConnectionRequest):
+    """Detach a connection from the user WITHOUT touching the peer on the
+    server: the key keeps working and the peer goes back to the pool of
+    linkable existing clients."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    before = len(data.get('user_connections', []))
+    data['user_connections'] = [
+        c for c in data.get('user_connections', [])
+        if not (c.get('user_id') == user_id
+                and c.get('server_id') == req.server_id
+                and c.get('protocol') == req.protocol
+                and c.get('client_id') == req.client_id)
+    ]
+    if len(data['user_connections']) == before:
+        return JSONResponse({'error': 'Connection link not found'}, status_code=404)
+    save_data(data)
+    return {'status': 'success'}
+
+
 @app.get('/api/users/{user_id}/connections', tags=["Users"])
 async def api_get_user_connections(request: Request, user_id: str):
     user = get_current_user(request)

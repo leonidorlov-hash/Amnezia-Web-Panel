@@ -591,5 +591,8 @@
   "password_optional_no_role": "No password needed for the “No role” role",
   "password_required_for_role": "A password is required for the selected role",
   "username_empty": "Username must not be empty",
-  "invalid_role": "Invalid role"
+  "invalid_role": "Invalid role",
+  "unlink_key_title": "Unlink key {} from user \"{}\"?",
+  "unlink_confirm": "Really unlink?!",
+  "conn_unlinked": "Connection unlinked"
 }

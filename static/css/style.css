@@ -1556,6 +1556,10 @@ a:hover {
     background: var(--bg-card-hover);
 }
 
+.client-item.peer-highlight {
+    border: 2px solid #7038da;
+}
+
 .client-info {
     display: flex;
     align-items: center;
