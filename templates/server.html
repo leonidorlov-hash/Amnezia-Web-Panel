@@ -3649,7 +3649,23 @@
                 protocol: proto, client_id: clientId, enable: enable,
             });
             showToast(enable ? _('connection_enabled') : _('connection_disabled'), 'success');
-            await loadConnections();
+            // Update just this row in place — no full list reload. The 5s
+            // poll reconciles speeds/badges anyway.
+            if (row && btn) {
+                row.style.opacity = enable ? '' : '0.5';
+                btn.classList.toggle('peer-toggle-off', !enable);
+                btn.title = enable ? _('stop') : _('starting');
+                btn.setAttribute('onclick', `toggleConnection('${escapeJs(clientId)}', ${!enable}, this)`);
+                const meta = row.querySelector('.client-meta');
+                if (meta) {
+                    const offBadge = meta.querySelector('.badge-danger');
+                    if (!enable && !offBadge) {
+                        meta.insertAdjacentHTML('afterbegin', `<span class="badge badge-danger" style="font-size:0.65rem">${_('stop')}</span>`);
+                    } else if (enable && offBadge) {
+                        offBadge.remove();
+                    }
+                }
+            }
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
         } finally {
