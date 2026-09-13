@@ -855,8 +855,13 @@ PersistentKeepalive = 25
             'config': client_config,
         }
 
-    def get_client_config(self, client_id, server_host):
-        """Reconstruct client config from stored data."""
+    def get_client_config(self, client_id, server_host, port=None):
+        """Reconstruct client config from stored data.
+
+        `port` is optional: when omitted (direct calls) the listen port is
+        read from the server config; when passed by the panel (which already
+        knows the instance port) it is used for the Endpoint.
+        """
         clients_table = self._get_clients_table()
         client = next((c for c in clients_table if c.get('clientId') == client_id), None)
         if not client:
@@ -876,7 +881,7 @@ PersistentKeepalive = 25
         if not psk:
             psk = self._get_server_psk()
 
-        port = self._get_listen_port()
+        port = port if port is not None else self._get_listen_port()
 
         dns = self._get_dns(ud)
 
