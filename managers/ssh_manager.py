@@ -121,7 +121,7 @@ class SSHManager:
         # Keep NAT/stateful firewalls from silently dropping the idle
         # long-lived transport between command bursts.
         try:
-            self.client.get_transport().set_keepalive(30)
+            self.client.get_transport().set_keepalive(15)
         except Exception:
             pass
 
