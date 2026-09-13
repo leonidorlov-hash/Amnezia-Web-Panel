@@ -785,9 +785,20 @@ fi
         """
         v = self.AWG_MODULE_VERSION
         script = f"""
-if modinfo amneziawg >/dev/null 2>&1; then
-    echo "KERNEL_MODULE: ok: already present ($(modinfo amneziawg | awk '/^version:/{{print $2; exit}}'))"
+CUR=$(modinfo amneziawg 2>/dev/null | awk '/^version:/{{print $2; exit}}')
+if [ -n "$CUR" ] && [ "$CUR" = "{v}" ]; then
+    echo "KERNEL_MODULE: ok: already present ($CUR)"
     exit 0
+fi
+if [ -n "$CUR" ]; then
+    # An older/newer module is present: upgrade. The module can only be
+    # unloaded when no tunnel uses it; otherwise defer the upgrade.
+    if ! modprobe -r amneziawg 2>/dev/null; then
+        echo "KERNEL_MODULE: skipped: version $CUR present but in use by running tunnels; stop all AWG containers and reinstall to upgrade to {v}"
+        exit 0
+    fi
+    dkms remove "amneziawg/$CUR" --all >/dev/null 2>&1 || true
+    echo "KERNEL_MODULE: upgrading from $CUR"
 fi
 if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'; then
     echo "KERNEL_MODULE: skipped: Secure Boot enabled (unsigned module would not load)"
