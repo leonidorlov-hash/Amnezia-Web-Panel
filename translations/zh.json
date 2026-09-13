@@ -558,5 +558,8 @@
   "password_optional_no_role": "“无角色”角色无需密码",
   "password_required_for_role": "所选角色必须设置密码",
   "username_empty": "用户名不能为空",
-  "invalid_role": "角色无效"
+  "invalid_role": "角色无效",
+  "select_connection": "请选择连接",
+  "name_required": "名称为必填项",
+  "no_servers_available": "没有可用的服务器"
 }

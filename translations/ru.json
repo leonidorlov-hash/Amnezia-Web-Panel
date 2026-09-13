@@ -591,5 +591,8 @@
   "password_optional_no_role": "Для роли «Без роли» пароль не нужен",
   "password_required_for_role": "Для выбранной роли пароль обязателен",
   "username_empty": "Имя пользователя не может быть пустым",
-  "invalid_role": "Недопустимая роль"
+  "invalid_role": "Недопустимая роль",
+  "select_connection": "Выберите подключение",
+  "name_required": "Укажите имя",
+  "no_servers_available": "Нет доступных серверов"
 }
