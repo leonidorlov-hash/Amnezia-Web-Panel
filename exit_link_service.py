@@ -119,11 +119,13 @@ class ExitLinkService:
             raise ExitLinkError('exit_not_found', 'Exit node not found or not installed', 404)
         return server, rec
 
-    def _awg(self, server):
-        return self.awg_manager_factory(self.get_ssh(server))
+    async def _awg(self, server):
+        # get_ssh() blocks on ensure_connected (TCP+SSH handshake, up to the
+        # connect timeout) — never run it inside the event loop.
+        return self.awg_manager_factory(await asyncio.to_thread(self.get_ssh, server))
 
-    def _exit_manager(self, server):
-        return self.exit_manager_factory(self.get_ssh(server))
+    async def _exit_manager(self, server):
+        return self.exit_manager_factory(await asyncio.to_thread(self.get_ssh, server))
 
     # ----- persistence under the lock, resolved by uid (indices may shift) -----
 
@@ -181,7 +183,7 @@ class ExitLinkService:
             exit_srv, _ = self._exit(data, link.get('exit_uid'))
             self._require_exit_dns(exit_srv)
         async with self._locks[(entry['uid'], protocol)]:
-            awg = self._awg(entry)
+            awg = await self._awg(entry)
             try:
                 log = await asyncio.to_thread(awg.exit_set_dns_via_exit, protocol, enabled)
             except Exception as err:
@@ -236,7 +238,7 @@ class ExitLinkService:
                 warnings.append('exit_dns_disabled_no_dns')
 
         async with self._locks[(entry['uid'], protocol)]:
-            awg = self._awg(entry)
+            awg = await self._awg(entry)
             entry_pub = await asyncio.to_thread(awg.exit_prepare_keys, protocol)
             try:
                 mtu = int(await asyncio.to_thread(awg._get_mtu, protocol) or 0)
@@ -262,7 +264,7 @@ class ExitLinkService:
                     await self._update_record(entry['uid'], protocol,
                                               lambda r: (r.get('exit_link') or {}).__setitem__('stale', reason))
 
-            exit_manager = self._exit_manager(exit_srv)
+            exit_manager = await self._exit_manager(exit_srv)
             name = f"{entry.get('name') or entry.get('host', '')} / {self.protocol_display_name(protocol)}"
             peer = await asyncio.to_thread(exit_manager.add_peer, peer_id, name, entry_pub)
             link = {
@@ -298,7 +300,8 @@ class ExitLinkService:
                 # New link confirmed: drop our peer on the previous exit, best effort.
                 try:
                     old_exit, _ = self._exit(data, previous['exit_uid'])
-                    await asyncio.to_thread(self._exit_manager(old_exit).remove_peer, None, peer_id)
+                    old_exit_manager = await self._exit_manager(old_exit)
+                    await asyncio.to_thread(old_exit_manager.remove_peer, None, peer_id)
                 except Exception as err:
                     logger.warning("previous exit %s unreachable, peer left behind: %s", previous['exit_uid'], err)
                     warnings.append('old_exit_unreachable_orphan_peer')
@@ -328,10 +331,12 @@ class ExitLinkService:
         warnings = []
         async with self._locks[(entry['uid'], protocol)]:
             # Entry first: direct egress must come back even when the exit is dead.
-            await asyncio.to_thread(self._awg(entry).exit_unlink, protocol)
+            awg = await self._awg(entry)
+            await asyncio.to_thread(awg.exit_unlink, protocol)
             try:
                 exit_srv, _ = self._exit(data, link.get('exit_uid'))
-                await asyncio.to_thread(self._exit_manager(exit_srv).remove_peer, None,
+                exit_manager = await self._exit_manager(exit_srv)
+                await asyncio.to_thread(exit_manager.remove_peer, None,
                                         peer_id_for(entry['uid'], protocol))
             except Exception as err:
                 logger.warning("exit %s unreachable on unlink, peer left behind: %s", link.get('exit_uid'), err)
@@ -399,14 +404,15 @@ class ExitLinkService:
         # The panel knows of no link, so a link file coming out of the archive
         # would silently route clients through an exit nobody is tracking.
         try:
-            info = await asyncio.to_thread(self._awg(entry).exit_link_info, protocol)
+            awg = await self._awg(entry)
+            info = await asyncio.to_thread(awg.exit_link_info, protocol)
         except Exception as err:
             logger.warning("could not read the link state after restore: %s", err)
             return {}
         if not info:
             return {}
         try:
-            await asyncio.to_thread(self._awg(entry).exit_unlink, protocol)
+            await asyncio.to_thread(awg.exit_unlink, protocol)
             return {'exit_link_restored': 'removed', 'exit_name': info.get('exit_name', '')}
         except Exception as err:
             logger.warning("could not remove the restored link file: %s", err)
@@ -422,7 +428,8 @@ class ExitLinkService:
         for item in self.linked_entries(data, exit_uid):
             entry = data['servers'][item['server_id']]
             try:
-                await asyncio.to_thread(self._awg(entry).exit_unlink, item['protocol'])
+                awg = await self._awg(entry)
+                await asyncio.to_thread(awg.exit_unlink, item['protocol'])
                 await self._update_record(item['server_uid'], item['protocol'], lambda r: r.pop('exit_link', None))
                 results.append({**item, 'status': 'success', 'error': None})
             except Exception as err:
@@ -442,7 +449,8 @@ class ExitLinkService:
                 continue
             try:
                 exit_srv, _ = self._exit(data, link['exit_uid'])
-                await asyncio.to_thread(self._exit_manager(exit_srv).remove_peer, None,
+                exit_manager = await self._exit_manager(exit_srv)
+                await asyncio.to_thread(exit_manager.remove_peer, None,
                                         peer_id_for(server['uid'], proto))
                 results.append({'protocol': proto, 'exit_uid': link['exit_uid'], 'status': 'success'})
             except Exception as err:
@@ -467,7 +475,7 @@ class ExitLinkService:
         link = rec.get('exit_link')
         if not link:
             raise ExitLinkError('not_linked', 'This instance is not linked to an exit node')
-        awg = self._awg(entry)
+        awg = await self._awg(entry)
         try:
             probe = await asyncio.to_thread(awg.exit_check_egress, protocol)
         except RuntimeError as err:
@@ -496,7 +504,7 @@ class ExitLinkService:
     async def status(self, entry_server_id, protocol):
         data = self.load_data()
         entry, rec = self._entry(data, entry_server_id, protocol)
-        awg = self._awg(entry)
+        awg = await self._awg(entry)
         link_status = await asyncio.to_thread(awg.exit_link_status, protocol)
         try:
             mtu = int(await asyncio.to_thread(awg._get_mtu, protocol) or 0)
