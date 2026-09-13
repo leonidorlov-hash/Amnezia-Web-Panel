@@ -3083,7 +3083,7 @@
         document.getElementById('connectionsSection').scrollIntoView({ behavior: 'smooth' });
     }
 
-    async function loadConnections(isPoll) {
+    async function loadConnections(isPoll, force) {
         const proto = document.getElementById('connProtoSelect').value;
         const loading = document.getElementById('connectionsLoading');
         const emptyEl = document.getElementById('connectionsEmpty');
@@ -3095,8 +3095,9 @@
         }
 
         // Skip poll re-renders while the rename editor is open — a full innerHTML
-        // rebuild would destroy the input mid-typing
-        if (isPoll && document.querySelector('#connectionsListInner .rename-editor')) {
+        // rebuild would destroy the input mid-typing. `force` bypasses this for
+        // the editor's own save path, which wants an immediate silent refresh.
+        if (isPoll && !force && document.querySelector('#connectionsListInner .rename-editor')) {
             clearTimeout(window.connPollTimer);
             if (document.getElementById('connectionsSection').style.display !== 'none') {
                 window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
@@ -3112,7 +3113,7 @@
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
             // The rename editor may have opened while this poll was in flight —
             // re-rendering now would destroy it mid-typing.
-            if (isPoll && listEl.querySelector('.rename-editor')) return;
+            if (isPoll && !force && listEl.querySelector('.rename-editor')) return;
             loading.style.display = 'none';
             if (!data.clients || data.clients.length === 0) {
                 listEl.innerHTML = '';
@@ -3440,7 +3441,7 @@
                 document.getElementById('configModalTitle').textContent = `${_('config')} — ${result.name}`;
                 currentConfigName = result.name.replace(/\s+/g, '_');
             }
-            await loadConnections();
+            await loadConnections(true, true); // silent refresh, no overlay
             showToast(toast[0], toast[1]);
         } catch (err) {
             showToast(_('error') + ': ' + err.message, 'error');
