@@ -591,5 +591,6 @@
   "password_optional_no_role": "Для роли «Без роли» пароль не нужен",
   "password_required_for_role": "Для выбранной роли пароль обязателен",
   "username_empty": "Имя пользователя не может быть пустым",
-  "invalid_role": "Недопустимая роль"
+  "invalid_role": "Недопустимая роль",
+  "awg_dns6_hint": "Используется в ключах, когда туннель dual-stack (IPv4+IPv6)"
 }
