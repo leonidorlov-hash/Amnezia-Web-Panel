@@ -166,7 +166,8 @@ class ConnectionService:
                 server = dict(data['servers'][server_id])
                 port = server.get('protocols', {}).get(protocol, {}).get('port', '55424')
 
-            ssh = self.get_ssh(server)
+            # get_ssh() blocks on ensure_connected — keep it off the event loop.
+            ssh = await asyncio.to_thread(self.get_ssh, server)
             remote_client_id = None
             manager = None
             try:
@@ -247,7 +248,8 @@ class ConnectionService:
                     raise SelfServiceError('Server not found', status_code=404)
                 server = dict(data['servers'][server_id])
 
-            ssh = self.get_ssh(server)
+            # get_ssh() blocks on ensure_connected — keep it off the event loop.
+            ssh = await asyncio.to_thread(self.get_ssh, server)
             try:
                 await asyncio.to_thread(ssh.connect)
                 manager = self.get_protocol_manager(ssh, protocol)
