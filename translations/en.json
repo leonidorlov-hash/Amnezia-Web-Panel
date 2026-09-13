@@ -602,5 +602,7 @@
   "username_empty": "Username must not be empty",
   "invalid_role": "Invalid role",
   "assign_user": "User",
-  "no_user_option": "— do not link —"
+  "no_user_option": "— do not link —",
+  "stop_peer_title": "Stop",
+  "start_peer_title": "Enable"
 }

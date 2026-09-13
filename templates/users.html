@@ -979,7 +979,7 @@
                 const maxSpeed = parseFloat(c.max_speed || 0) || 0;
                 const dateStr = formatConnDate(c.created_at);
                 const toggleCls = enabled ? 'peer-toggle' : 'peer-toggle peer-toggle-off';
-                const toggleTitle = enabled ? _('stop') : _('starting');
+                const toggleTitle = enabled ? _('stop_peer_title') : _('start_peer_title');
                 const disabledStyle = enabled ? '' : 'opacity:0.5;';
                 const serverLink = `/server/${sid}?protocol=${encodeURIComponent(proto)}&highlight=${encodeURIComponent(c.client_id)}`;
                 listEl.innerHTML += `

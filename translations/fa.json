@@ -569,5 +569,7 @@
   "username_empty": "نام کاربری نمی‌تواند خالی باشد",
   "invalid_role": "نقش نامعتبر",
   "assign_user": "کاربر",
-  "no_user_option": "— بدون اتصال —"
+  "no_user_option": "— بدون اتصال —",
+  "stop_peer_title": "توقف",
+  "start_peer_title": "فعال‌سازی"
 }

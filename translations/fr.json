@@ -569,5 +569,7 @@
   "username_empty": "Le nom d'utilisateur ne peut pas être vide",
   "invalid_role": "Rôle invalide",
   "assign_user": "Utilisateur",
-  "no_user_option": "— ne pas lier —"
+  "no_user_option": "— ne pas lier —",
+  "stop_peer_title": "Arrêter",
+  "start_peer_title": "Activer"
 }

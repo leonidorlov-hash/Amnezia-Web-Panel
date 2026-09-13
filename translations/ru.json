@@ -602,5 +602,7 @@
   "username_empty": "Имя пользователя не может быть пустым",
   "invalid_role": "Недопустимая роль",
   "assign_user": "Пользователь",
-  "no_user_option": "— не привязывать —"
+  "no_user_option": "— не привязывать —",
+  "stop_peer_title": "Остановить",
+  "start_peer_title": "Включить"
 }
