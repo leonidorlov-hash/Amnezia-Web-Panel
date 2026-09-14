@@ -588,10 +588,10 @@
                                 data-haspassword="${u.has_share_password ? 'true' : 'false'}"
                                 title="${_('share_access')}">📤</button>
                         ${u.id !== "{{ current_user.id }}" ? `
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="toggleUser(this.dataset)"
+                            <button class="btn btn-secondary btn-sm btn-icon peer-toggle${u.enabled ? '' : ' peer-toggle-off'}" onclick="toggleUser(this.dataset, this)"
                                     data-id="${u.id}" data-enable="${u.enabled ? 'false' : 'true'}"
                                     title="${u.enabled ? _('stop_btn') : _('start_btn')}">
-                                ${u.enabled ? '🔵' : '⚫'}
+                                💡
                             </button>
                             <button class="btn btn-danger btn-sm btn-icon" onclick="deleteUser('${u.id}')" title="${_('delete')}">${ICON_TRASH}</button>
                         ` : ''}
@@ -777,16 +777,29 @@
         }
     }
 
-    async function toggleUser(dataset) {
+    async function toggleUser(dataset, btn) {
+        const userId = dataset.id;
+        const enable = dataset.enable === 'true';
+        const original = btn ? btn.innerHTML : null;
+        // Lock the whole user card and swap the bulb for a spinner
+        const row = btn ? btn.closest('.client-item') : null;
+        if (row) {
+            row.classList.add('client-toggling');
+            row.querySelectorAll('button').forEach(b => b.disabled = true);
+        }
+        if (btn) btn.innerHTML = '<span class="spinner"></span>';
         try {
-            const userId = dataset.id;
-            const enable = dataset.enable === 'true';
             const action = enable ? _('enabling') : _('disabling');
             showToast(`${action}...`, 'info');
             await apiCall(`/api/users/${userId}/toggle`, 'POST', { enabled: enable });
             showToast(enable ? _('user_enabled') : _('user_disabled'), 'success');
             setTimeout(() => window.location.reload(), 500);
         } catch (err) {
+            if (row) {
+                row.classList.remove('client-toggling');
+                row.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+            if (btn && original !== null) btn.innerHTML = original;
             showToast(`${_('error')}: ` + err.message, 'error');
         }
     }
@@ -943,6 +956,13 @@
     var currentConnsUserId = null;
     var currentConnsUsername = '';
 
+    function formatConnDate(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        return d.toLocaleDateString();
+    }
+
     async function viewUserConnections(userId, username) {
         currentConnsUserId = userId;
         currentConnsUsername = username;
@@ -960,25 +980,41 @@
             data.connections.forEach(c => {
                 const sid = Number(c.server_id) || 0;
                 const proto = c.protocol || 'awg';
-                const connName = c.name || 'Connection';
+                // Show the live peer name from the instance (matched by client
+                // id / IP) — the panel-side record name is just a label.
+                const name = c.peer_name || c.name || 'Connection';
+                const enabled = c.enabled !== false;
+                const ip = (c.allowed_ips || '').split(',')[0].split('/')[0].trim();
+                const maxSpeed = parseFloat(c.max_speed || 0) || 0;
+                const dateStr = formatConnDate(c.created_at);
+                const toggleCls = enabled ? 'peer-toggle' : 'peer-toggle peer-toggle-off';
+                const toggleTitle = enabled ? _('stop') : _('starting');
+                const disabledStyle = enabled ? '' : 'opacity:0.5;';
                 // Deep link: opens the server page on the right instance and
                 // frames this peer's card there.
                 const serverLink = `/server/${sid}?protocol=${encodeURIComponent(proto)}&highlight=${encodeURIComponent(c.client_id)}`;
                 listEl.innerHTML += `
-                    <div class="client-item">
-                        <div class="client-info">
-                            <div class="client-avatar">🔗</div>
+                    <div class="client-item" data-maxspeed="${maxSpeed}">
+                        <div class="client-info" style="${disabledStyle}">
+                            <div class="client-avatar">${escapeHtml((name[0] || '🔗').toUpperCase())}</div>
                             <div>
-                                <div class="client-name">${escapeHtml(connName)}</div>
+                                <div class="client-name">${escapeHtml(name)}${ip ? ` <span class="client-ip">${escapeHtml(ip)}</span>` : ''}</div>
                                 <div class="client-meta">
                                     <span>🖥 <a href="${serverLink}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:underline;">${escapeHtml(c.server_name || '')}</a></span>
-                                    <span>${escapeHtml(proto === 'awg' ? 'AmneziaWG' : (proto === 'awg2' ? 'AmneziaWG 2.0' : (proto === 'awg_legacy' ? 'AWG Legacy' : (proto === 'xray' ? 'Xray' : proto.toUpperCase()))))}</span>
+                                    <span>${escapeHtml(proto === 'awg' ? 'AmneziaWG' : (proto === 'awg2' ? 'AmneziaWG 2.0' : (proto === 'awg_legacy' ? 'AWG Legacy' : (proto === 'xray' ? 'Xray' : (proto === 'wireguard' ? 'WireGuard' : proto.toUpperCase())))))}</span>
+                                    ${dateStr ? `<span>📅 ${dateStr}</span>` : ''}
+                                    <span class="traffic-badge traffic-limit" title="${_('max_speed')}">${maxSpeed > 0 ? '🐢 ' + maxSpeed + ' Mbps' : '⚡<span style="font-size:1.25em; line-height:0;">∞</span>'}</span>
+                                    ${c.data_sent ? `<span class="traffic-badge traffic-down">↓ ${escapeHtml(c.data_sent)}</span>` : ''}
+                                    ${c.data_received ? `<span class="traffic-badge traffic-up">↑ ${escapeHtml(c.data_received)}</span>` : ''}
                                 </div>
                             </div>
                         </div>
                         <div class="client-actions">
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(c.name || 'VPN')}')" title="${_('config')}">📄</button>
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="unlinkUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(connName)}')" title="${_('unlink_key_title').replace('{}', connName).replace('{}', currentConnsUsername)}">✂️</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="renameUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('rename')}">${ICON_PENCIL}</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('config')}">📄</button>
+                            <button class="btn btn-secondary btn-sm btn-icon ${toggleCls}" onclick="toggleUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', ${!enabled}, this)" title="${toggleTitle}">💡</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="unlinkUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('unlink_key_title').replace('{}', name).replace('{}', currentConnsUsername)}">✂️</button>
+                            <button class="btn btn-danger btn-sm btn-icon" onclick="removeUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('delete')}">${ICON_TRASH}</button>
                         </div>
                     </div>
                 `;
@@ -995,6 +1031,59 @@
                 server_id: serverId, protocol: proto, client_id: clientId,
             });
             showToast(_('conn_unlinked'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    function lockConnRow(btn, lock) {
+        const row = btn ? btn.closest('.client-item') : null;
+        if (!row) return null;
+        row.classList.toggle('client-toggling', lock);
+        row.querySelectorAll('button').forEach(b => b.disabled = lock);
+        return row;
+    }
+
+    async function toggleUserConnection(serverId, clientId, proto, enable, btn) {
+        const original = btn.innerHTML;
+        lockConnRow(btn, true);
+        btn.innerHTML = '<span class="spinner"></span>';
+        try {
+            showToast(enable ? _('enable_connection_progress') : _('disable_connection_progress'), 'info');
+            await apiCall(`/api/servers/${serverId}/connections/toggle`, 'POST', {
+                protocol: proto, client_id: clientId, enable: enable,
+            });
+            showToast(enable ? _('connection_enabled') : _('connection_disabled'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            lockConnRow(btn, false);
+            btn.innerHTML = original;
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    async function renameUserConnection(serverId, clientId, proto, oldName) {
+        const newName = prompt(_('rename'), oldName);
+        if (!newName || newName.trim() === '' || newName === oldName) return;
+        try {
+            await apiCall(`/api/servers/${serverId}/connections/rename`, 'POST', {
+                protocol: proto, client_id: clientId, new_name: newName.trim(),
+            });
+            showToast(_('success'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    async function removeUserConnection(serverId, clientId, proto, name) {
+        if (!confirm(`${_('delete')}: ${name}?`)) return;
+        try {
+            await apiCall(`/api/servers/${serverId}/connections/remove`, 'POST', {
+                protocol: proto, client_id: clientId,
+            });
+            showToast(_('success'), 'success');
             viewUserConnections(currentConnsUserId, currentConnsUsername);
         } catch (err) {
             showToast(`${_('error')}: ` + err.message, 'error');

@@ -3237,6 +3237,11 @@
         }
     }
 
+    // Deep link from the users page: /server/N?protocol=awg2&highlight=<client_id>
+    // switches to the right instance, frames the peer's card and scrolls it
+    // into the middle of the viewport. The id is kept in a var so the 5s poll
+    // re-applies the frame after every re-render; URL params are cleaned so a
+    // refresh doesn't scroll again.
     let highlightedPeerId = null;
 
     function applyPeerHighlight(scroll) {
