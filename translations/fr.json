@@ -567,5 +567,9 @@
   "peer_already_linked_self": "Ce pair est déjà lié à cet utilisateur",
   "select_connection": "Sélectionnez une connexion",
   "name_required": "Le nom est requis",
-  "no_servers_available": "Aucun serveur disponible"
+  "no_servers_available": "Aucun serveur disponible",
+  "assign_user": "Utilisateur",
+  "no_user_option": "— ne pas lier —",
+  "stop_peer_title": "Arrêter",
+  "start_peer_title": "Activer"
 }

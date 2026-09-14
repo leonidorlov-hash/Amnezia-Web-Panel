@@ -567,5 +567,9 @@
   "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است",
   "select_connection": "یک اتصال انتخاب کنید",
   "name_required": "نام الزامی است",
-  "no_servers_available": "سروری در دسترس نیست"
+  "no_servers_available": "سروری در دسترس نیست",
+  "assign_user": "کاربر",
+  "no_user_option": "— بدون اتصال —",
+  "stop_peer_title": "توقف",
+  "start_peer_title": "فعال‌سازی"
 }

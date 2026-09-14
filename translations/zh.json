@@ -567,5 +567,9 @@
   "peer_already_linked_self": "该节点已绑定到此用户",
   "select_connection": "请选择连接",
   "name_required": "名称为必填项",
-  "no_servers_available": "没有可用的服务器"
+  "no_servers_available": "没有可用的服务器",
+  "assign_user": "用户",
+  "no_user_option": "— 不绑定 —",
+  "stop_peer_title": "停止",
+  "start_peer_title": "启用"
 }

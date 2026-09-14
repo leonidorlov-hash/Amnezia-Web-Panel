@@ -600,5 +600,9 @@
   "peer_already_linked_self": "Этот пир уже привязан к данному пользователю",
   "select_connection": "Выберите подключение",
   "name_required": "Укажите имя",
-  "no_servers_available": "Нет доступных серверов"
+  "no_servers_available": "Нет доступных серверов",
+  "assign_user": "Пользователь",
+  "no_user_option": "— не привязывать —",
+  "stop_peer_title": "Остановить",
+  "start_peer_title": "Включить"
 }

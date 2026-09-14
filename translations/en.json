@@ -600,5 +600,9 @@
   "peer_already_linked_self": "This peer is already linked to this user",
   "select_connection": "Select a connection",
   "name_required": "Name is required",
-  "no_servers_available": "No servers available"
+  "no_servers_available": "No servers available",
+  "assign_user": "User",
+  "no_user_option": "— do not link —",
+  "stop_peer_title": "Stop",
+  "start_peer_title": "Enable"
 }

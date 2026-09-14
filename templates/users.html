@@ -348,7 +348,7 @@
 
 <!-- ===== User Connections Modal ===== -->
 <div class="modal-backdrop" id="userConnsModal">
-    <div class="modal" style="max-width:600px;">
+    <div class="modal">
         <div class="modal-header">
             <h2 class="modal-title" id="userConnsTitle">{{ _('user_conns_title') }}</h2>
             <button class="modal-close" onclick="closeModal('userConnsModal')">×</button>
@@ -988,7 +988,7 @@
                 const maxSpeed = parseFloat(c.max_speed || 0) || 0;
                 const dateStr = formatConnDate(c.created_at);
                 const toggleCls = enabled ? 'peer-toggle' : 'peer-toggle peer-toggle-off';
-                const toggleTitle = enabled ? _('stop') : _('starting');
+                const toggleTitle = enabled ? _('stop_peer_title') : _('start_peer_title');
                 const disabledStyle = enabled ? '' : 'opacity:0.5;';
                 // Deep link: opens the server page on the right instance and
                 // frames this peer's card there.
