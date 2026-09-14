@@ -5191,7 +5191,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
             # Use existing client
             target_client_id = req.client_id
             # Retrieve config for existing client
-            config = await asyncio.to_thread(manager.get_client_config, req.protocol, req.client_id, server['host'], port)
+            config = await asyncio.to_thread(_manager_call, manager, 'get_client_config', req.protocol, req.client_id, server['host'], port)
             result = {'client_id': target_client_id, 'config': config}
         else:
             # Create new client
