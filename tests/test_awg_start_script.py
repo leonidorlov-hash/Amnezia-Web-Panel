@@ -48,6 +48,15 @@ class GoldenBuilderTests(unittest.TestCase):
     def test_start_script_awg(self):
         self.assertEqual(AWGManager(None)._render_start_script('awg'), fixture('start_awg.sh'))
 
+    def test_start_script_self_heals_tools_kernel_mismatch(self):
+        """start.sh must detect an awg-tools vs kernel-module version mismatch
+        (setconf EINVAL, tunnel silently down) and retry in userspace mode."""
+        for proto in ('awg', 'awg3', 'awg_legacy'):
+            script = AWGManager(None)._render_start_script(proto)
+            self.assertIn('mismatch', script, proto)
+            self.assertIn('WG_FORCE_USERSPACE=1', script, proto)
+            self.assertIn('/sys/module/amneziawg/version', script, proto)
+
     def test_start_script_awg3_carries_userspace_guard(self):
         script = AWGManager(None)._render_start_script('awg3')
         self.assertEqual(script, fixture('start_awg3.sh'))
