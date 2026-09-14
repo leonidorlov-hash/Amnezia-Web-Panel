@@ -2085,6 +2085,7 @@ class InstallProtocolRequest(BaseModel):
     awg_mtu: Optional[str] = None
     awg_dns1: Optional[str] = None
     awg_dns2: Optional[str] = None
+    awg_dns6: Optional[str] = None
     awg_i1: Optional[str] = None
     awg_i2: Optional[str] = None
     awg_i3: Optional[str] = None
@@ -2097,6 +2098,7 @@ class AwgSettingsRequest(BaseModel):
     mtu: Optional[str] = None
     dns1: Optional[str] = None
     dns2: Optional[str] = None
+    dns6: Optional[str] = None
     i1: Optional[str] = None
     i2: Optional[str] = None
     i3: Optional[str] = None
@@ -3560,6 +3562,7 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 mtu=req.awg_mtu,
                 dns=join_dns(req.awg_dns1, req.awg_dns2),
                 special_junk=awg_special_junk,
+                dns6=req.awg_dns6,
             )
         else:
             result = manager.install_protocol(install_protocol, port=req.port)
@@ -3947,6 +3950,7 @@ async def api_awg_settings_save(request: Request, server_id: int, req: AwgSettin
                 mtu=req.mtu,
                 dns=dns,
                 special_junk=special_junk,
+                dns6=req.dns6,
             )
         finally:
             ssh.disconnect()
@@ -3954,6 +3958,7 @@ async def api_awg_settings_save(request: Request, server_id: int, req: AwgSettin
         if proto_record is not None:
             proto_record['mtu'] = settings.get('mtu')
             proto_record['dns'] = settings.get('dns')
+            proto_record['dns6'] = settings.get('dns6')
             save_data(data)
         settings['dns1'], settings['dns2'] = split_dns(settings.get('dns'))
         settings['status'] = 'success'
