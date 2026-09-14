@@ -889,7 +889,14 @@
         }
     }
 
+    // var on purpose: #167 declares the same globals; var redeclaration is
+    // legal either merge order, a duplicate let would be a SyntaxError.
+    var currentConnsUserId = null;
+    var currentConnsUsername = '';
+
     async function viewUserConnections(userId, username) {
+        currentConnsUserId = userId;
+        currentConnsUsername = username;
         document.getElementById('userConnsTitle').textContent = `${_('connections')} — ${username}`;
         const listEl = document.getElementById('userConnsList');
         listEl.innerHTML = `<div style="text-align:center;padding:var(--space-lg);color:var(--text-muted);">${_('loading')}</div>`;
@@ -902,26 +909,46 @@
             }
             listEl.innerHTML = '';
             data.connections.forEach(c => {
+                const sid = Number(c.server_id) || 0;
+                const proto = c.protocol || 'awg';
+                const connName = c.name || 'Connection';
+                // Deep link: opens the server page on the right instance and
+                // frames this peer's card there.
+                const serverLink = `/server/${sid}?protocol=${encodeURIComponent(proto)}&highlight=${encodeURIComponent(c.client_id)}`;
                 listEl.innerHTML += `
                     <div class="client-item">
                         <div class="client-info">
                             <div class="client-avatar">🔗</div>
                             <div>
-                                <div class="client-name">${escapeHtml(c.name || 'Connection')}</div>
+                                <div class="client-name">${escapeHtml(connName)}</div>
                                 <div class="client-meta">
-                                    <span>🖥 ${escapeHtml(c.server_name || '')}</span>
-                                    <span>${escapeHtml(c.protocol === 'awg' ? 'AmneziaWG' : (c.protocol === 'awg2' ? 'AmneziaWG 2.0' : (c.protocol === 'awg_legacy' ? 'AWG Legacy' : (c.protocol === 'xray' ? 'Xray' : c.protocol.toUpperCase()))))}</span>
+                                    <span>🖥 <a href="${serverLink}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:underline;">${escapeHtml(c.server_name || '')}</a></span>
+                                    <span>${escapeHtml(proto === 'awg' ? 'AmneziaWG' : (proto === 'awg2' ? 'AmneziaWG 2.0' : (proto === 'awg_legacy' ? 'AWG Legacy' : (proto === 'xray' ? 'Xray' : proto.toUpperCase()))))}</span>
                                 </div>
                             </div>
                         </div>
                         <div class="client-actions">
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${Number(c.server_id) || 0}, '${escapeJs(c.client_id)}', '${escapeJs(c.protocol)}', '${escapeJs(c.name || 'VPN')}')" title="${_('config')}">📄</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(c.name || 'VPN')}')" title="${_('config')}">📄</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="unlinkUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(connName)}')" title="${_('unlink_key_title').replace('{}', connName).replace('{}', currentConnsUsername)}">✂️</button>
                         </div>
                     </div>
                 `;
             });
         } catch (err) {
             listEl.innerHTML = `<div style="color:#ef4444;padding:var(--space-md);">${_('error')}: ${err.message}</div>`;
+        }
+    }
+
+    async function unlinkUserConnection(serverId, clientId, proto, name) {
+        if (!confirm(_('unlink_confirm'))) return;
+        try {
+            await apiCall(`/api/users/${currentConnsUserId}/connections/unlink`, 'POST', {
+                server_id: serverId, protocol: proto, client_id: clientId,
+            });
+            showToast(_('conn_unlinked'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
         }
     }
 

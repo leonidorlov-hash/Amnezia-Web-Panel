@@ -592,5 +592,8 @@
   "password_required_for_role": "A password is required for the selected role",
   "username_empty": "Username must not be empty",
   "invalid_role": "Invalid role",
-  "awg_dns6_hint": "Used in client keys when the tunnel is dual-stack (IPv4+IPv6)"
+  "awg_dns6_hint": "Used in client keys when the tunnel is dual-stack (IPv4+IPv6)",
+  "unlink_key_title": "Unlink key {} from user \"{}\"?",
+  "unlink_confirm": "Really unlink?!",
+  "conn_unlinked": "Connection unlinked"
 }
