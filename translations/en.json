@@ -606,5 +606,9 @@
   "stop_peer_title": "Stop",
   "start_peer_title": "Enable",
   "ssh_cooldown_title": "SSH cooldown (sec)",
-  "ssh_cooldown_hint": "Initial delay before reconnecting to an unreachable server. Do not change if the server works fine."
+  "ssh_cooldown_hint": "Initial delay before reconnecting to an unreachable server. Do not change if the server works fine.",
+  "peer_poll_title": "Live peer refresh",
+  "peer_poll_hint": "How often the peer list refreshes itself. 0 = off (default). 5–10 is fine on fast servers; on slow ones use 300–600 or keep it off.",
+  "peer_poll_off": "off",
+  "peer_poll_sec": "sec"
 }

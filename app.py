@@ -4378,6 +4378,35 @@ async def api_ssh_cooldown(request: Request, server_id: int):
     return {'ok': True, 'ssh_cooldown_base': seconds}
 
 
+# Allowed live peer-list refresh intervals (seconds); 0 disables polling.
+PEER_POLL_INTERVALS = (0, 5, 10, 15, 20, 45, 120, 300, 600)
+
+
+@app.post('/api/servers/{server_id}/peer_poll_interval', tags=["Servers"])
+async def api_peer_poll_interval(request: Request, server_id: int):
+    """Set the per-server live peer-list refresh interval (0 = off).
+
+    Polling is opt-in: every poll is a full connections read over SSH, which
+    is cheap on fast servers but painful on slow/flaky ones."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        body = await request.json()
+        seconds = int(body.get('seconds', 0))
+    except Exception:
+        return JSONResponse({'error': 'Invalid value'}, status_code=400)
+    if seconds not in PEER_POLL_INTERVALS:
+        return JSONResponse(
+            {'error': 'Value must be one of ' + ','.join(map(str, PEER_POLL_INTERVALS))},
+            status_code=400)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    data['servers'][server_id]['peer_poll_interval'] = seconds
+    save_data(data)
+    return {'ok': True, 'peer_poll_interval': seconds}
+
+
 @app.post('/api/servers/{server_id}/host_tuning', tags=["Protocols"])
 def api_host_tuning(request: Request, server_id: int):
     """Server-level network tuning summary (host sysctls + AWG containers)."""

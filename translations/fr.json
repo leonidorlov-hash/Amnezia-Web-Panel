@@ -573,5 +573,9 @@
   "stop_peer_title": "Arrêter",
   "start_peer_title": "Activer",
   "ssh_cooldown_title": "SSH cooldown (s)",
-  "ssh_cooldown_hint": "Délai initial avant reconnexion à un serveur injoignable. Ne modifiez pas si le serveur fonctionne correctement."
+  "ssh_cooldown_hint": "Délai initial avant reconnexion à un serveur injoignable. Ne modifiez pas si le serveur fonctionne correctement.",
+  "peer_poll_title": "Actualisation en direct des pairs",
+  "peer_poll_hint": "Fréquence de rafraîchissement automatique de la liste des pairs. 0 = désactivé (par défaut). 5–10 suffit sur les serveurs rapides ; sur les lents, utilisez 300–600 ou laissez désactivé.",
+  "peer_poll_off": "désactivé",
+  "peer_poll_sec": "s"
 }

@@ -573,5 +573,9 @@
   "stop_peer_title": "停止",
   "start_peer_title": "启用",
   "ssh_cooldown_title": "SSH 冷却时间(秒)",
-  "ssh_cooldown_hint": "重新连接不可达服务器前的初始延迟。如果服务器工作正常,请勿更改。"
+  "ssh_cooldown_hint": "重新连接不可达服务器前的初始延迟。如果服务器工作正常,请勿更改。",
+  "peer_poll_title": "节点实时刷新",
+  "peer_poll_hint": "节点列表自动刷新的间隔。0 = 关闭(默认)。快的服务器用 5–10 即可;慢的服务器建议 300–600 或保持关闭。",
+  "peer_poll_off": "关闭",
+  "peer_poll_sec": "秒"
 }

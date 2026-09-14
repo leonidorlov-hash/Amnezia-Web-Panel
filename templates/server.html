@@ -1263,6 +1263,9 @@
 <script>
     const SERVER_ID = {{ server_id }};
     let SSH_COOLDOWN_BASE = {{ (server.get('ssh_cooldown_base') or 30) | tojson }};
+    // Live peer-list refresh interval in seconds; 0 = off (opt-in per server).
+    let PEER_POLL_INTERVAL = {{ (server.get('peer_poll_interval') or 0) | tojson }};
+    const PEER_POLL_STEPS = [0, 5, 10, 15, 20, 45, 120, 300, 600];
     document.body.dataset.serverUid = {{ (server.uid or '') | tojson }};
     const SERVER_HOST = "{{ server.host }}";
     const CUSTOM_PROTO_NAMES = {
@@ -1458,8 +1461,44 @@
                     </div>
                     <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">${_('ssh_cooldown_hint')}</div>
                 </div>
+                <div style="margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border);">
+                    <label for="peerPollSelect" style="display:block; font-size:0.85rem; margin-bottom:6px;">${_('peer_poll_title')}</label>
+                    <div class="flex" style="gap:8px;">
+                        <select class="form-select" id="peerPollSelect" style="max-width:160px;">
+                            ${PEER_POLL_STEPS.map(s => `<option value="${s}"${s === PEER_POLL_INTERVAL ? ' selected' : ''}>${s === 0 ? _('peer_poll_off') : s + ' ' + _('peer_poll_sec')}</option>`).join('')}
+                        </select>
+                        <button class="btn btn-secondary btn-sm" onclick="savePeerPollInterval()" id="peerPollSaveBtn">💾</button>
+                    </div>
+                    <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">${_('peer_poll_hint')}</div>
+                </div>
             </div>
         `;
+    }
+
+    async function savePeerPollInterval() {
+        const select = document.getElementById('peerPollSelect');
+        const btn = document.getElementById('peerPollSaveBtn');
+        if (!select) return;
+        const seconds = parseInt(select.value, 10);
+        if (!PEER_POLL_STEPS.includes(seconds)) {
+            showToast(_('peer_poll_title') + ': ' + PEER_POLL_STEPS.join('/'), 'error');
+            return;
+        }
+        if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>'; }
+        try {
+            const res = await apiCall(`/api/servers/${SERVER_ID}/peer_poll_interval`, 'POST', { seconds });
+            PEER_POLL_INTERVAL = res.peer_poll_interval;
+            // Reschedule (or stop) the live refresh with the new interval.
+            clearTimeout(window.connPollTimer);
+            if (PEER_POLL_INTERVAL > 0 && document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, PEER_POLL_INTERVAL * 1000);
+            }
+            showToast('✓', 'success');
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '💾'; }
+        }
     }
 
     async function saveSshCooldown() {
@@ -3154,8 +3193,8 @@
         // the editor's own save path, which wants an immediate silent refresh.
         if (isPoll && !force && document.querySelector('#connectionsListInner .rename-editor')) {
             clearTimeout(window.connPollTimer);
-            if (document.getElementById('connectionsSection').style.display !== 'none') {
-                window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
+            if (PEER_POLL_INTERVAL > 0 && document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, PEER_POLL_INTERVAL * 1000);
             }
             return;
         }
@@ -3274,10 +3313,11 @@
         } finally {
             window.connLoading = false;
             highlightPeerFromQuery();
-            // Auto-refresh every 5s while the connections section is visible (live speed/handshake)
+            // Live refresh while the connections section is visible; the
+            // interval is opt-in per server (0 = off, management modal).
             clearTimeout(window.connPollTimer);
-            if (document.getElementById('connectionsSection').style.display !== 'none') {
-                window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
+            if (PEER_POLL_INTERVAL > 0 && document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, PEER_POLL_INTERVAL * 1000);
             }
         }
     }
