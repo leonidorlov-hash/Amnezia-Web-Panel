@@ -564,5 +564,8 @@
   "unlink_confirm": "واقعاً لغو اتصال شود؟!",
   "conn_unlinked": "اتصال لغو شد",
   "peer_already_linked": "این پیر از قبل به کاربر {} متصل است",
-  "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است"
+  "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است",
+  "select_connection": "یک اتصال انتخاب کنید",
+  "name_required": "نام الزامی است",
+  "no_servers_available": "سروری در دسترس نیست"
 }

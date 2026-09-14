@@ -564,5 +564,8 @@
   "unlink_confirm": "Vraiment dissocier ?!",
   "conn_unlinked": "Connexion dissociée",
   "peer_already_linked": "Ce pair est déjà lié à l'utilisateur {}",
-  "peer_already_linked_self": "Ce pair est déjà lié à cet utilisateur"
+  "peer_already_linked_self": "Ce pair est déjà lié à cet utilisateur",
+  "select_connection": "Sélectionnez une connexion",
+  "name_required": "Le nom est requis",
+  "no_servers_available": "Aucun serveur disponible"
 }

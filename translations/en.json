@@ -597,5 +597,8 @@
   "unlink_confirm": "Really unlink?!",
   "conn_unlinked": "Connection unlinked",
   "peer_already_linked": "This peer is already linked to user {}",
-  "peer_already_linked_self": "This peer is already linked to this user"
+  "peer_already_linked_self": "This peer is already linked to this user",
+  "select_connection": "Select a connection",
+  "name_required": "Name is required",
+  "no_servers_available": "No servers available"
 }
