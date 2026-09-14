@@ -185,7 +185,7 @@
   "create_new_conn": "ایجاد اتصال جدید",
   "link_existing_conn": "اتصال به موجود",
   "select_existing_conn": "انتخاب اتصال موجود",
-  "existing_conn_hint": "فقط اتصال‌های بدون کاربر نمایش داده می‌شوند",
+  "existing_conn_hint": "فقط اتصال‌های بدون کاربر نمایش داده می‌شوند. برای انتخاب چند مورد Ctrl را نگه دارید",
   "conn_name_panel": "نام اتصال (در پنل)",
   "user_conns_title": "اتصال‌های کاربر",
   "no_free_conns": "اتصال آزاد موجود نیست",
@@ -562,5 +562,7 @@
   "awg_dns6_hint": "وقتی تونل دوپشته (IPv4+IPv6) است در کلیدها استفاده می‌شود",
   "unlink_key_title": "لغو اتصال کلید {} از کاربر \"{}\"؟",
   "unlink_confirm": "واقعاً لغو اتصال شود؟!",
-  "conn_unlinked": "اتصال لغو شد"
+  "conn_unlinked": "اتصال لغو شد",
+  "peer_already_linked": "این پیر از قبل به کاربر {} متصل است",
+  "peer_already_linked_self": "این پیر از قبل به همین کاربر متصل است"
 }
