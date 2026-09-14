@@ -292,6 +292,7 @@ _SSH_POOL_LOCK = threading.Lock()
 
 def get_ssh(server):
     key = (server['host'], int(server.get('ssh_port', 22)), server['username'])
+    cooldown_base = float(server.get('ssh_cooldown_base') or 30)
     with _SSH_POOL_LOCK:
         ssh = _SSH_POOL.get(key)
         if ssh is None:
@@ -301,8 +302,11 @@ def get_ssh(server):
                 username=server['username'],
                 password=server.get('password'),
                 private_key=server.get('private_key'),
+                connect_cooldown_base=cooldown_base,
             )
             _SSH_POOL[key] = ssh
+        # Apply edits without dropping the pooled connection.
+        ssh._connect_cooldown_base = cooldown_base
         ssh.pooled = True
     ssh.ensure_connected()
     return ssh
@@ -1657,7 +1661,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-async def perform_delete_user(data: dict, user_id: str):
+def perform_delete_user(data: dict, user_id: str):
     user = next((u for u in data['users'] if u['id'] == user_id), None)
     if not user:
         return False
@@ -1695,7 +1699,7 @@ async def perform_toggle_user(data: dict, user_id: str, enable: bool) -> bool:
             if sid >= len(data['servers']):
                 continue
             server = data['servers'][sid]
-            ssh = get_ssh(server)
+            ssh = await asyncio.to_thread(get_ssh, server)
             await asyncio.to_thread(ssh.connect)
             manager = get_protocol_manager(ssh, uc['protocol'])
             await asyncio.to_thread(
@@ -1742,7 +1746,7 @@ async def perform_mass_operations(delete_uids: List[str] = None, toggle_uids: Li
         srv = current_data['servers'][srv_id]
         
         try:
-            ssh = get_ssh(srv)
+            ssh = await asyncio.to_thread(get_ssh, srv)
             await asyncio.to_thread(ssh.connect)
             
             # 1. Deletes
@@ -1996,7 +2000,7 @@ def tpl(request, template, **kwargs):
 
 
 @app.get('/manifest.webmanifest')
-async def web_manifest(request: Request):
+def web_manifest(request: Request):
     """Installable PWA manifest — public, no auth (browsers fetch without credentials)."""
     data = load_data()
     lang = request.cookies.get('lang', 'en')
@@ -2008,7 +2012,7 @@ async def web_manifest(request: Request):
 
 
 @app.get('/sw.js')
-async def service_worker():
+def service_worker():
     """Root-scoped service worker. Must not live under /static/ or scope is confined."""
     path = os.path.join(application_path, 'static', 'sw.js')
     return FileResponse(
@@ -2758,14 +2762,14 @@ async def periodic_background_tasks():
 # ======================== PAGE ROUTES ========================
 
 @app.get('/login', response_class=HTMLResponse, tags=["System Templates"])
-async def login_page(request: Request):
+def login_page(request: Request):
     if get_current_user(request):
         return RedirectResponse(url='/', status_code=302)
     return tpl(request, 'login.html')
 
 
 @app.get("/set_lang/{lang}", tags=["System Templates"])
-async def set_lang(lang: str, request: Request):
+def set_lang(lang: str, request: Request):
     ref = request.headers.get("referer", "/")
     response = RedirectResponse(url=ref)
     response.set_cookie(key="lang", value=lang, max_age=31536000)
@@ -2773,13 +2777,13 @@ async def set_lang(lang: str, request: Request):
 
 
 @app.get('/logout', tags=["System Templates"])
-async def logout(request: Request):
+def logout(request: Request):
     request.session.clear()
     return RedirectResponse(url='/login', status_code=302)
 
 
 @app.get('/', response_class=HTMLResponse, tags=["System Templates"])
-async def index(request: Request):
+def index(request: Request):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url='/login', status_code=302)
@@ -2790,7 +2794,7 @@ async def index(request: Request):
 
 
 @app.get('/server/{server_id}', response_class=HTMLResponse, tags=["System Templates"])
-async def server_detail(request: Request, server_id: int):
+def server_detail(request: Request, server_id: int):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url='/login', status_code=302)
@@ -2805,7 +2809,7 @@ async def server_detail(request: Request, server_id: int):
 
 
 @app.get('/users', response_class=HTMLResponse, tags=["System Templates"])
-async def users_page(request: Request):
+def users_page(request: Request):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url='/login', status_code=302)
@@ -2822,7 +2826,7 @@ async def users_page(request: Request):
 
 
 @app.get('/my', response_class=HTMLResponse, tags=["System Templates"])
-async def my_connections_page(request: Request):
+def my_connections_page(request: Request):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url='/login', status_code=302)
@@ -2841,7 +2845,7 @@ async def my_connections_page(request: Request):
 # ======================== AUTH API ========================
 
 @app.get('/api/auth/captcha', tags=["Authentication"])
-async def api_captcha(request: Request):
+def api_captcha(request: Request):
     if not CaptchaGenerator:
         return JSONResponse({"error": "multicolorcaptcha is not installed"}, status_code=500)
     
@@ -2858,7 +2862,7 @@ async def api_captcha(request: Request):
 
 
 @app.post('/api/auth/login', tags=["Authentication"])
-async def api_login(request: Request, req: LoginRequest):
+def api_login(request: Request, req: LoginRequest):
     data = load_data()
     captcha_settings = data.get('settings', {}).get('captcha', {})
     if captcha_settings.get('enabled') is True:
@@ -2917,7 +2921,7 @@ def _check_admin(request):
 
 
 @app.post('/api/servers/add', tags=["Servers"])
-async def api_add_server(request: Request, req: AddServerRequest):
+def api_add_server(request: Request, req: AddServerRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -2954,7 +2958,7 @@ async def api_add_server(request: Request, req: AddServerRequest):
 
 
 @app.post('/api/servers/{server_id}/edit', tags=["Servers"])
-async def api_edit_server(request: Request, server_id: int, req: EditServerRequest):
+def api_edit_server(request: Request, server_id: int, req: EditServerRequest):
     """Update connection details for an existing server entry. Verifies the new
     credentials by SSH-connecting before persisting, so a typo can't lock us out.
     """
@@ -3099,7 +3103,7 @@ async def api_delete_server(request: Request, server_id: int):
         if server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         server = data['servers'][server_id]
-        drop_ssh(server)
+        await asyncio.to_thread(drop_ssh, server)
         data['servers'].pop(server_id)
         # Clean up connections for this server
         data['user_connections'] = [c for c in data.get('user_connections', []) if c.get('server_id') != server_id]
@@ -3114,7 +3118,7 @@ async def api_delete_server(request: Request, server_id: int):
 
 
 @app.post('/api/servers/{server_id}/reboot', tags=["Servers"])
-async def api_reboot_server(request: Request, server_id: int):
+def api_reboot_server(request: Request, server_id: int):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -3155,8 +3159,8 @@ async def api_clear_server(request: Request, server_id: int):
             logger.warning(f"exit-link cleanup before clear failed: {e}")
         data = load_data()
         server = data['servers'][server_id]
-        ssh = get_ssh(server)
-        ssh.connect()
+        ssh = await asyncio.to_thread(get_ssh, server)
+        await asyncio.to_thread(ssh.connect)
         # Match every Amnezia container by name prefix (catches awg/awg2/awg-legacy,
         # wireguard, xray/ssxray, openvpn, dns, and any future amnezia-* protocol)
         # plus the telemt container which doesn't share that prefix.
@@ -3175,7 +3179,7 @@ done
 docker network rm amnezia-dns-net >/dev/null 2>&1 || true
 rm -rf /opt/amnezia
 """
-        ssh.run_sudo_script(cleanup_script, timeout=120)
+        await asyncio.to_thread(ssh.run_sudo_script, cleanup_script, timeout=120)
 
         server['protocols'] = {}
         save_data(data)
@@ -3187,7 +3191,7 @@ rm -rf /opt/amnezia
 
 
 @app.post('/api/servers/{server_id}/stats', tags=["Servers"])
-async def api_server_stats(request: Request, server_id: int):
+def api_server_stats(request: Request, server_id: int):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -3240,7 +3244,7 @@ async def api_server_stats(request: Request, server_id: int):
 
 
 @app.post('/api/servers/{server_id}/check', tags=["Servers"])
-async def api_check_server(request: Request, server_id: int):
+def api_check_server(request: Request, server_id: int):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -3437,7 +3441,7 @@ INSTALL_PORT_TRANSPORT = {
 
 
 @app.get('/api/servers/{server_id}/used-ports', tags=["Servers"])
-async def api_used_ports(request: Request, server_id: int):
+def api_used_ports(request: Request, server_id: int):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -3490,14 +3494,14 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
             except ValueError as e:
                 return JSONResponse({'error': str(e)}, status_code=400)
 
-        ssh = get_ssh(server)
-        ssh.connect()
+        ssh = await asyncio.to_thread(get_ssh, server)
+        await asyncio.to_thread(ssh.connect)
 
         # Validate the requested port before touching Docker: a busy port
         # otherwise fails mid-install with a half-created broken container.
         transport = INSTALL_PORT_TRANSPORT.get(install_base)
         if transport and req.port and str(req.port).isdigit():
-            used = get_used_ports(ssh)
+            used = await asyncio.to_thread(get_used_ports, ssh)
             owner = used.get(transport, {}).get(str(req.port))
             if owner:
                 return JSONResponse(
@@ -3505,12 +3509,14 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                               f'Choose another port.'},
                     status_code=400)
 
-        docker_install_log = ensure_docker_installed(ssh)
+        docker_install_log = await asyncio.to_thread(ensure_docker_installed, ssh)
         manager = get_protocol_manager(ssh, install_protocol)
 
         # Pass parameters to installer
+        install_kwargs = None
         if install_base == 'telemt':
-            result = manager.install_protocol(
+            install_args = ()
+            install_kwargs = dict(
                 protocol_type=install_protocol,
                 port=req.port,
                 tls_emulation=req.tls_emulation if req.tls_emulation is not None else True,
@@ -3518,18 +3524,22 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 max_connections=req.max_connections if req.max_connections is not None else 0
             )
         elif install_base == 'xray':
-            result = manager.install_protocol(port=req.port)
+            install_args = ()
+            install_kwargs = dict(port=req.port)
         elif install_base == 'wireguard':
-            result = manager.install_protocol(port=req.port)
+            install_args = ()
+            install_kwargs = dict(port=req.port)
         elif install_base == 'socks5':
-            result = manager.install_protocol(
+            install_args = ()
+            install_kwargs = dict(
                 protocol_type=install_protocol,
                 port=req.port,
                 username=req.socks5_username,
                 password=req.socks5_password,
             )
         elif install_base == 'adguard':
-            result = manager.install_protocol(
+            install_args = ()
+            install_kwargs = dict(
                 protocol_type='adguard',
                 mode=req.adguard_mode or 'sidebyside',
                 web_port=req.adguard_web_port,
@@ -3542,22 +3552,24 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 expose_doh=bool(req.adguard_expose_doh),
             )
         elif install_base == 'nginx':
-            result = manager.install_protocol(
+            install_args = ()
+            install_kwargs = dict(
                 protocol_type='nginx',
                 port=req.port,
                 domain=req.nginx_domain,
                 email=req.nginx_email,
             )
         elif install_base == 'exit':
-            result = manager.install_protocol(
+            install_args = ()
+            install_kwargs = dict(
                 protocol_type='exit',
                 port=req.port,
                 subnet=req.exit_subnet,
                 obfuscation=bool(req.exit_obfuscation),
             )
         elif install_base in AWG_PROTOCOLS:
-            result = manager.install_protocol(
-                install_protocol,
+            install_args = (install_protocol,)
+            install_kwargs = dict(
                 port=req.port,
                 mtu=req.awg_mtu,
                 dns=join_dns(req.awg_dns1, req.awg_dns2),
@@ -3565,7 +3577,9 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 dns6=req.awg_dns6,
             )
         else:
-            result = manager.install_protocol(install_protocol, port=req.port)
+            install_args = (install_protocol,)
+            install_kwargs = dict(port=req.port)
+        result = await asyncio.to_thread(manager.install_protocol, *install_args, **install_kwargs)
 
         if not isinstance(result, dict):
             result = {'status': 'success', 'message': str(result)}
@@ -3653,7 +3667,7 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
 
 
 @app.get('/api/servers/{server_id}/socks5/credentials', tags=["Protocols"])
-async def api_socks5_get_credentials(request: Request, server_id: int, protocol: str = 'socks5'):
+def api_socks5_get_credentials(request: Request, server_id: int, protocol: str = 'socks5'):
     """Return the current SOCKS5 port/username/password for the panel UI."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -3675,7 +3689,7 @@ async def api_socks5_get_credentials(request: Request, server_id: int, protocol:
 
 
 @app.post('/api/servers/{server_id}/socks5/credentials', tags=["Protocols"])
-async def api_socks5_update_credentials(request: Request, server_id: int, req: Socks5SettingsRequest):
+def api_socks5_update_credentials(request: Request, server_id: int, req: Socks5SettingsRequest):
     """Apply new SOCKS5 connection settings — regenerates the 3proxy config and
     reconciles the container (recreating it if the listening port changed)."""
     if not _check_admin(request):
@@ -3716,7 +3730,7 @@ def _exit_manager_for(ssh):
 
 
 @app.post('/api/servers/{server_id}/exit/peers', tags=["Protocols"])
-async def api_exit_peers(request: Request, server_id: int, req: ProtocolRequest):
+def api_exit_peers(request: Request, server_id: int, req: ProtocolRequest):
     """Exit node endpoint data (public key, port, transit subnet, obfuscation)
     and its peers - the entry nodes linked to it - with live handshake and
     transfer counters."""
@@ -3741,7 +3755,7 @@ async def api_exit_peers(request: Request, server_id: int, req: ProtocolRequest)
 
 
 @app.post('/api/servers/{server_id}/exit/peers/add', tags=["Protocols"])
-async def api_exit_peer_add(request: Request, server_id: int, req: ExitPeerAddRequest):
+def api_exit_peer_add(request: Request, server_id: int, req: ExitPeerAddRequest):
     """Register a peer on the exit node by hand (a node not managed by this
     panel). Upserts by `peer_id`; returns the transit address, a fresh PSK and
     the exit's endpoint data for the peer's own WireGuard config."""
@@ -3770,7 +3784,7 @@ async def api_exit_peer_add(request: Request, server_id: int, req: ExitPeerAddRe
 
 
 @app.post('/api/servers/{server_id}/exit/peers/remove', tags=["Protocols"])
-async def api_exit_peer_remove(request: Request, server_id: int, req: ExitPeerRemoveRequest):
+def api_exit_peer_remove(request: Request, server_id: int, req: ExitPeerRemoveRequest):
     """Drop a peer from the exit node by public key or by peer id."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -3799,7 +3813,7 @@ def _exit_link_error(e: ExitLinkError):
 
 
 @app.get('/api/exit-nodes', tags=["Servers"])
-async def api_exit_nodes(request: Request):
+def api_exit_nodes(request: Request):
     """Servers with an installed exit node, from data.json (no SSH)."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -3895,7 +3909,7 @@ async def api_exit_link_check_egress(request: Request, server_id: int, req: Prot
 
 
 @app.post('/api/servers/{server_id}/awg/settings', tags=["Protocols"])
-async def api_awg_settings_get(request: Request, server_id: int, req: ProtocolRequest):
+def api_awg_settings_get(request: Request, server_id: int, req: ProtocolRequest):
     """Return MTU, DNS and the special junk packets I1-I5 of an AWG server."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -3919,7 +3933,7 @@ async def api_awg_settings_get(request: Request, server_id: int, req: ProtocolRe
 
 
 @app.post('/api/servers/{server_id}/awg/settings/save', tags=["Protocols"])
-async def api_awg_settings_save(request: Request, server_id: int, req: AwgSettingsRequest):
+def api_awg_settings_save(request: Request, server_id: int, req: AwgSettingsRequest):
     """Update MTU, DNS and I1-I5 and apply them to the running interface."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -3988,13 +4002,13 @@ async def api_uninstall_protocol(request: Request, server_id: int, req: Protocol
                 logger.warning(f"unlink before uninstall failed: {e}")
             data = load_data()
             server = data['servers'][server_id]
-        ssh = get_ssh(server)
-        ssh.connect()
+        ssh = await asyncio.to_thread(get_ssh, server)
+        await asyncio.to_thread(ssh.connect)
         manager = get_protocol_manager(ssh, req.protocol)
         if base in ('xray', 'wireguard'):
-            manager.remove_container()
+            await asyncio.to_thread(manager.remove_container)
         else:
-            manager.remove_container(req.protocol)
+            await asyncio.to_thread(manager.remove_container, req.protocol)
         if req.protocol in server.get('protocols', {}):
             del server['protocols'][req.protocol]
             save_data(data)
@@ -4030,7 +4044,7 @@ CONTAINER_NAMES = {
 
 
 @app.post('/api/servers/{server_id}/backups', tags=["Protocols"])
-async def api_protocol_backups_list(request: Request, server_id: int, req: ProtocolRequest):
+def api_protocol_backups_list(request: Request, server_id: int, req: ProtocolRequest):
     """List backups created on the remote server for one protocol."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4057,7 +4071,7 @@ async def api_protocol_backups_list(request: Request, server_id: int, req: Proto
 
 
 @app.post('/api/servers/{server_id}/backups/create', tags=["Protocols"])
-async def api_protocol_backup_create(request: Request, server_id: int, req: ProtocolRequest):
+def api_protocol_backup_create(request: Request, server_id: int, req: ProtocolRequest):
     """Create a protocol backup archive on the remote server."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4087,7 +4101,7 @@ async def api_protocol_backup_create(request: Request, server_id: int, req: Prot
 
 
 @app.post('/api/servers/{server_id}/backups/download', tags=["Protocols"])
-async def api_protocol_backup_download(request: Request, server_id: int, req: BackupDownloadRequest):
+def api_protocol_backup_download(request: Request, server_id: int, req: BackupDownloadRequest):
     """Download one remote protocol backup archive through the panel."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4174,9 +4188,9 @@ async def api_protocol_backup_upload(
         os.close(fd)
         fd = None
         server = data['servers'][server_id]
-        ssh = get_ssh(server)
-        ssh.connect()
-        result = BackupManager(ssh).upload_backup(protocol, file.filename, tmp_path)
+        ssh = await asyncio.to_thread(get_ssh, server)
+        await asyncio.to_thread(ssh.connect)
+        result = await asyncio.to_thread(BackupManager(ssh).upload_backup, protocol, file.filename, tmp_path)
         if result.get('status') == 'error':
             return JSONResponse({'error': result.get('message', 'Failed to upload backup')}, status_code=400)
         return result
@@ -4212,9 +4226,9 @@ async def api_protocol_backup_restore(request: Request, server_id: int, req: Bac
         container = protocol_container_name(req.protocol)
         if not container:
             return JSONResponse({'error': 'Unknown protocol'}, status_code=400)
-        ssh = get_ssh(server)
-        ssh.connect()
-        result = BackupManager(ssh).restore_backup(req.protocol, container, filename)
+        ssh = await asyncio.to_thread(get_ssh, server)
+        await asyncio.to_thread(ssh.connect)
+        result = await asyncio.to_thread(BackupManager(ssh).restore_backup, req.protocol, container, filename)
         if result.get('status') == 'error':
             return JSONResponse({'error': result.get('message', 'Failed to restore backup')}, status_code=500)
         ssh.disconnect()
@@ -4235,7 +4249,7 @@ async def api_protocol_backup_restore(request: Request, server_id: int, req: Bac
 
 
 @app.post('/api/servers/{server_id}/backups/delete', tags=["Protocols"])
-async def api_protocol_backup_delete(request: Request, server_id: int, req: BackupDownloadRequest):
+def api_protocol_backup_delete(request: Request, server_id: int, req: BackupDownloadRequest):
     """Delete one protocol backup archive on the remote server."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4265,7 +4279,7 @@ async def api_protocol_backup_delete(request: Request, server_id: int, req: Back
 
 
 @app.post('/api/servers/{server_id}/container/toggle', tags=["Protocols"])
-async def api_container_toggle(request: Request, server_id: int, req: ContainerToggleRequest):
+def api_container_toggle(request: Request, server_id: int, req: ContainerToggleRequest):
     """Start or stop a protocol Docker container. Stopping an exit node that
     entries route through is refused (409 `exit_in_use`) unless `force` is
     set - their clients would silently land on the kill-switch."""
@@ -4305,7 +4319,7 @@ async def api_container_toggle(request: Request, server_id: int, req: ContainerT
 
 
 @app.post('/api/servers/{server_id}/server_config', tags=["Protocols"])
-async def api_server_config(request: Request, server_id: int, req: ProtocolRequest):
+def api_server_config(request: Request, server_id: int, req: ProtocolRequest):
     """Get the raw server-side WireGuard/Xray configuration."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4344,8 +4358,28 @@ async def api_server_config(request: Request, server_id: int, req: ProtocolReque
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
+@app.post('/api/servers/{server_id}/ssh_cooldown', tags=["Servers"])
+async def api_ssh_cooldown(request: Request, server_id: int):
+    """Set the per-server SSH circuit-breaker base cooldown (seconds)."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        body = await request.json()
+        seconds = float(body.get('seconds', 30))
+    except Exception:
+        return JSONResponse({'error': 'Invalid value'}, status_code=400)
+    if not (5 <= seconds <= 300):
+        return JSONResponse({'error': 'Value must be between 5 and 300 seconds'}, status_code=400)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    data['servers'][server_id]['ssh_cooldown_base'] = seconds
+    save_data(data)
+    return {'ok': True, 'ssh_cooldown_base': seconds}
+
+
 @app.post('/api/servers/{server_id}/host_tuning', tags=["Protocols"])
-async def api_host_tuning(request: Request, server_id: int):
+def api_host_tuning(request: Request, server_id: int):
     """Server-level network tuning summary (host sysctls + AWG containers)."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4359,6 +4393,7 @@ async def api_host_tuning(request: Request, server_id: int):
         mgr = AWGManager(ssh)
         info = mgr.get_host_tuning()
         ssh.disconnect()
+        info['panel'] = {'ssh_cooldown_base': float(server.get('ssh_cooldown_base') or 30)}
         return info
     except Exception as e:
         logger.exception("Error getting host tuning info")
@@ -4366,7 +4401,7 @@ async def api_host_tuning(request: Request, server_id: int):
 
 
 @app.post('/api/servers/{server_id}/wgeasy/preview', tags=["Protocols"])
-async def api_wgeasy_preview(request: Request, server_id: int, req: WgEasyPreviewRequest):
+def api_wgeasy_preview(request: Request, server_id: int, req: WgEasyPreviewRequest):
     """Fetch the client list from a wg-easy / amnezia-wg-easy panel running on
     this server (via its local web API over SSH). No secrets are returned."""
     if not _check_admin(request):
@@ -4410,7 +4445,7 @@ async def api_wgeasy_preview(request: Request, server_id: int, req: WgEasyPrevie
 
 
 @app.post('/api/servers/{server_id}/protocol/rename', tags=["Protocols"])
-async def api_rename_protocol(request: Request, server_id: int, req: RenameProtocolRequest):
+def api_rename_protocol(request: Request, server_id: int, req: RenameProtocolRequest):
     """Set or clear a custom display name for an installed protocol instance."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4437,7 +4472,7 @@ async def api_rename_protocol(request: Request, server_id: int, req: RenameProto
 
 
 @app.post('/api/servers/{server_id}/wgeasy/import', tags=["Protocols"])
-async def api_wgeasy_import(request: Request, server_id: int, req: WgEasyImportRequest):
+def api_wgeasy_import(request: Request, server_id: int, req: WgEasyImportRequest):
     """Migrate clients from a wg-easy panel on this server into a panel-managed
     WireGuard instance, preserving keys/IPs/port so client configs keep working."""
     if not _check_admin(request):
@@ -4495,7 +4530,7 @@ async def api_wgeasy_import(request: Request, server_id: int, req: WgEasyImportR
 
 
 @app.post('/api/servers/{server_id}/server_config/save', tags=["Protocols"])
-async def api_server_config_save(request: Request, server_id: int, req: ServerConfigSaveRequest):
+def api_server_config_save(request: Request, server_id: int, req: ServerConfigSaveRequest):
     """Save the raw server-side WireGuard/Xray configuration and apply changes."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4542,7 +4577,7 @@ async def api_server_config_save(request: Request, server_id: int, req: ServerCo
 
 
 @app.post('/api/servers/{server_id}/nginx/site', tags=["Protocols"])
-async def api_nginx_site_get(request: Request, server_id: int, req: ProtocolRequest):
+def api_nginx_site_get(request: Request, server_id: int, req: ProtocolRequest):
     """Return editable NGINX site index.html."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4566,7 +4601,7 @@ async def api_nginx_site_get(request: Request, server_id: int, req: ProtocolRequ
 
 
 @app.post('/api/servers/{server_id}/nginx/site/save', tags=["Protocols"])
-async def api_nginx_site_save(request: Request, server_id: int, req: NginxSiteSaveRequest):
+def api_nginx_site_save(request: Request, server_id: int, req: NginxSiteSaveRequest):
     """Save editable NGINX site index.html."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4589,7 +4624,7 @@ async def api_nginx_site_save(request: Request, server_id: int, req: NginxSiteSa
         return JSONResponse({'error': str(e)}, status_code=500)
 
 @app.get('/api/servers/{server_id}/connections', tags=["Connections"])
-async def api_get_connections(request: Request, server_id: int, protocol: str = Query(default='awg')):
+def api_get_connections(request: Request, server_id: int, protocol: str = Query(default='awg')):
     if not protocol:
         protocol = 'awg'
     if not _check_admin(request):
@@ -4626,7 +4661,7 @@ async def api_get_connections(request: Request, server_id: int, protocol: str = 
 
 
 @app.post('/api/servers/{server_id}/connections/add', tags=["Connections"])
-async def api_add_connection(request: Request, server_id: int, req: AddConnectionRequest):
+def api_add_connection(request: Request, server_id: int, req: AddConnectionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -4680,7 +4715,7 @@ async def api_add_connection(request: Request, server_id: int, req: AddConnectio
 
 
 @app.post('/api/servers/{server_id}/connections/remove', tags=["Connections"])
-async def api_remove_connection(request: Request, server_id: int, req: ConnectionActionRequest):
+def api_remove_connection(request: Request, server_id: int, req: ConnectionActionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -4708,7 +4743,7 @@ async def api_remove_connection(request: Request, server_id: int, req: Connectio
 
 
 @app.post('/api/servers/{server_id}/connections/edit', tags=["Connections"])
-async def api_edit_connection(request: Request, server_id: int, req: EditConnectionRequest):
+def api_edit_connection(request: Request, server_id: int, req: EditConnectionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -4739,7 +4774,7 @@ async def api_edit_connection(request: Request, server_id: int, req: EditConnect
 
 
 @app.post('/api/servers/{server_id}/connections/clear_warnings', tags=["Connections"])
-async def api_clear_conn_warnings(request: Request, server_id: int, req: ConnectionActionRequest):
+def api_clear_conn_warnings(request: Request, server_id: int, req: ConnectionActionRequest):
     """Clear recorded connection-flood (torrent) warnings for one peer."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4760,7 +4795,7 @@ async def api_clear_conn_warnings(request: Request, server_id: int, req: Connect
 
 
 @app.post('/api/servers/{server_id}/connections/rename', tags=["Connections"])
-async def api_rename_connection(request: Request, server_id: int, req: RenameConnectionRequest):
+def api_rename_connection(request: Request, server_id: int, req: RenameConnectionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -4807,7 +4842,7 @@ async def api_rename_connection(request: Request, server_id: int, req: RenameCon
 
 
 @app.post('/api/servers/{server_id}/connections/config/save', tags=["Connections"])
-async def api_save_connection_config(request: Request, server_id: int, req: SaveConnectionConfigRequest):
+def api_save_connection_config(request: Request, server_id: int, req: SaveConnectionConfigRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -4832,7 +4867,7 @@ async def api_save_connection_config(request: Request, server_id: int, req: Save
 
 
 @app.post('/api/servers/{server_id}/connections/config', tags=["Connections"])
-async def api_get_connection_config(request: Request, server_id: int, req: ConnectionActionRequest):
+def api_get_connection_config(request: Request, server_id: int, req: ConnectionActionRequest):
     user = get_current_user(request)
     if not user:
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -4865,7 +4900,7 @@ async def api_get_connection_config(request: Request, server_id: int, req: Conne
 
 
 @app.post('/api/servers/{server_id}/connections/toggle', tags=["Connections"])
-async def api_toggle_connection(request: Request, server_id: int, req: ToggleConnectionRequest):
+def api_toggle_connection(request: Request, server_id: int, req: ToggleConnectionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -4890,7 +4925,7 @@ async def api_toggle_connection(request: Request, server_id: int, req: ToggleCon
 # ======================== USER API (admin only) ========================
 
 @app.get('/api/users', tags=["Users"])
-async def api_list_users(request: Request, search: str = '', page: int = 1, size: int = 10):
+def api_list_users(request: Request, search: str = '', page: int = 1, size: int = 10):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
@@ -4945,7 +4980,7 @@ async def api_list_users(request: Request, search: str = '', page: int = 1, size
 
 
 @app.post('/api/users/add', tags=["Users"])
-async def api_add_user(request: Request, req: AddUserRequest):
+def api_add_user(request: Request, req: AddUserRequest):
     cur = get_current_user(request)
     if not cur or cur['role'] != 'admin':
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -5100,7 +5135,7 @@ async def api_delete_user(request: Request, user_id: str):
         return JSONResponse({'error': _t('cannot_delete_self', lang)}, status_code=400)
     try:
         data = load_data()
-        success = await perform_delete_user(data, user_id)
+        success = await asyncio.to_thread(perform_delete_user, data, user_id)
         if not success:
             return JSONResponse({'error': 'User not found'}, status_code=404)
         save_data(data)
@@ -5128,7 +5163,7 @@ async def api_toggle_user(request: Request, user_id: str, req: ToggleUserRequest
 
 
 @app.post('/api/users/{user_id}/traffic/reset', tags=["Users"])
-async def api_reset_user_traffic(request: Request, user_id: str):
+def api_reset_user_traffic(request: Request, user_id: str):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -5183,7 +5218,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
                 return JSONResponse({'error': _t('peer_already_linked', lang).replace('{}', owner_name)}, status_code=400)
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
-        ssh = get_ssh(server)
+        ssh = await asyncio.to_thread(get_ssh, server)
         await asyncio.to_thread(ssh.connect)
         manager = get_protocol_manager(ssh, req.protocol)
         
@@ -5263,7 +5298,7 @@ async def api_unlink_user_connection(request: Request, user_id: str, req: Unlink
 
 
 @app.get('/api/users/{user_id}/connections', tags=["Users"])
-async def api_get_user_connections(request: Request, user_id: str):
+def api_get_user_connections(request: Request, user_id: str):
     user = get_current_user(request)
     if not user:
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -5324,7 +5359,7 @@ async def api_get_user_connections(request: Request, user_id: str):
 # ======================== MY CONNECTIONS API (for user role) ========================
 
 @app.get('/api/my/connections', tags=["Self-service"])
-async def api_my_connections(request: Request):
+def api_my_connections(request: Request):
     user = get_current_user(request)
     if not user:
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -5376,7 +5411,7 @@ async def api_my_connection_delete(request: Request, connection_id: str):
 
 
 @app.post('/api/users/{user_id}/share/setup', tags=["Users"])
-async def api_user_share_setup(user_id: str, req: ShareSetupRequest, request: Request):
+def api_user_share_setup(user_id: str, req: ShareSetupRequest, request: Request):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
@@ -5397,7 +5432,7 @@ async def api_user_share_setup(user_id: str, req: ShareSetupRequest, request: Re
 
 
 @app.get('/share/{token}', response_class=HTMLResponse, tags=["System Templates"])
-async def share_page(token: str, request: Request):
+def share_page(token: str, request: Request):
     data = load_data()
     user = next((u for u in data['users'] if u.get('share_token') == token), None)
     if not user or not user.get('share_enabled'):
@@ -5414,7 +5449,7 @@ async def share_page(token: str, request: Request):
 
 
 @app.post('/api/share/{token}/auth', tags=["Sharing"])
-async def api_share_auth(token: str, req: ShareAuthRequest, request: Request):
+def api_share_auth(token: str, req: ShareAuthRequest, request: Request):
     data = load_data()
     user = next((u for u in data['users'] if u.get('share_token') == token), None)
     if not user or not user.get('share_enabled'):
@@ -5429,7 +5464,7 @@ async def api_share_auth(token: str, req: ShareAuthRequest, request: Request):
 
 
 @app.get('/api/share/{token}/connections', tags=["Sharing"])
-async def api_share_connections(token: str, request: Request):
+def api_share_connections(token: str, request: Request):
     data = load_data()
     user = next((u for u in data['users'] if u.get('share_token') == token), None)
     if not user or not user.get('share_enabled'):
@@ -5451,7 +5486,7 @@ async def api_share_connections(token: str, request: Request):
 
 
 @app.post('/api/share/{token}/config/{connection_id}', tags=["Sharing"])
-async def api_share_config(token: str, connection_id: str, request: Request):
+def api_share_config(token: str, connection_id: str, request: Request):
     data = load_data()
     user = next((u for u in data['users'] if u.get('share_token') == token), None)
     if not user or not user.get('share_enabled'):
@@ -5483,7 +5518,7 @@ async def api_share_config(token: str, connection_id: str, request: Request):
 
 
 @app.post('/api/my/connections/{connection_id}/config', tags=["Self-service"])
-async def api_my_connection_config(request: Request, connection_id: str):
+def api_my_connection_config(request: Request, connection_id: str):
     user = get_current_user(request)
     if not user:
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -5514,7 +5549,7 @@ async def api_my_connection_config(request: Request, connection_id: str):
 
 
 @app.get('/settings', tags=["System Templates"])
-async def settings_page(request: Request):
+def settings_page(request: Request):
     user = _check_admin(request)
     if not user:
         return RedirectResponse('/login')
@@ -5530,7 +5565,7 @@ async def settings_page(request: Request):
 
 
 @app.get('/api/settings', tags=["Settings"])
-async def api_get_settings(request: Request):
+def api_get_settings(request: Request):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
@@ -5538,7 +5573,7 @@ async def api_get_settings(request: Request):
 
 
 @app.get('/api/settings/tunnels/status', tags=["Settings"])
-async def api_tunnels_status(request: Request):
+def api_tunnels_status(request: Request):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     return {
@@ -5646,7 +5681,7 @@ async def api_warp_disconnect(request: Request):
 #     return {'status': 'success'}
 
 @app.post('/api/settings/save', tags=["Settings"])
-async def save_settings(request: Request, payload: SaveSettingsRequest):
+def save_settings(request: Request, payload: SaveSettingsRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
@@ -5741,7 +5776,7 @@ async def api_sync_delete(request: Request):
 
 
 @app.get('/api/servers/{server_id}/{protocol}/clients', tags=["Connections"])
-async def api_get_server_clients(request: Request, server_id: int, protocol: str):
+def api_get_server_clients(request: Request, server_id: int, protocol: str):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
@@ -5773,7 +5808,7 @@ async def api_get_server_clients(request: Request, server_id: int, protocol: str
 
 
 @app.get('/api/settings/tokens', tags=["API Tokens"])
-async def api_list_tokens(request: Request):
+def api_list_tokens(request: Request):
     """List metadata for every API token. The raw token value is never
     returned by this endpoint — only its prefix and timestamps are visible
     after creation, by design."""
@@ -5858,7 +5893,7 @@ async def api_revoke_token(request: Request, token_id: str):
 
 
 @app.get('/api/settings/backup/download', tags=["Settings"])
-async def api_backup_download(request: Request):
+def api_backup_download(request: Request):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     if not os.path.exists(DATA_FILE):

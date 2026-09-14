@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 class SSHManager:
     """Manages SSH connections and command execution on remote servers."""
 
-    def __init__(self, host, port, username, password=None, private_key=None):
+    def __init__(self, host, port, username, password=None, private_key=None,
+                 connect_cooldown_base=30.0):
         self.host = host
         self.port = int(port)
         self.username = username
@@ -34,11 +35,17 @@ class SSHManager:
         # in open_sftp, bursts of 500s followed by the connect cooldown).
         # RLock because run_command retries by calling itself.
         self._exec_lock = threading.RLock()
-        # Backoff: after a failed connect, do not hammer the dead server on
-        # every request (each attempt costs up to `timeout` seconds and can
-        # exhaust the web worker pool when several servers are down).
+        # Circuit breaker: after a failed connect, do not hammer the dead
+        # server on every request (each attempt costs up to `timeout` seconds
+        # and can exhaust the web worker pool when several servers are down).
+        # Consecutive failures grow the cooldown base -> 2x -> 4x -> ... up
+        # to 300s; the first successful connect resets it back to base.
+        # Base is configurable per server (data.json: ssh_cooldown_base).
+        self._connect_cooldown_base = float(connect_cooldown_base or 30.0)
         self._last_connect_fail = 0.0
-        self._connect_cooldown = 30.0
+        self._connect_cooldown = self._connect_cooldown_base
+        self._connect_fail_count = 0
+        self._connect_cooldown_max = 300.0
         # Pooled managers (shared via app.get_ssh) must ignore the legacy
         # per-request disconnect() calls scattered across endpoints —
         # otherwise every API request kills the shared transport.
@@ -64,9 +71,25 @@ class SSHManager:
                         f"failed: {e}")
                     self._disconnect_locked()
             if last_exc is not None:
+                self._record_connect_failure()
                 raise last_exc
-            self._last_connect_fail = 0.0
+            self._reset_connect_failures()
         return True
+
+    def _record_connect_failure(self):
+        """Feed the breaker from any failed connect path (caller holds
+        _conn_lock): bump the streak and grow the cooldown exponentially."""
+        self._connect_fail_count += 1
+        self._last_connect_fail = time.time()
+        self._connect_cooldown = min(
+            self._connect_cooldown_base * (2 ** (self._connect_fail_count - 1)),
+            self._connect_cooldown_max)
+
+    def _reset_connect_failures(self):
+        """First successful connect closes the breaker again."""
+        self._connect_fail_count = 0
+        self._connect_cooldown = self._connect_cooldown_base
+        self._last_connect_fail = 0.0
 
     def _connect_once(self):
         """Single TCP+SSH handshake attempt (caller holds _conn_lock)."""
@@ -101,7 +124,7 @@ class SSHManager:
         # Keep NAT/stateful firewalls from silently dropping the idle
         # long-lived transport between command bursts.
         try:
-            self.client.get_transport().set_keepalive(30)
+            self.client.get_transport().set_keepalive(15)
         except Exception:
             pass
 
@@ -151,11 +174,9 @@ class SSHManager:
             raise ConnectionError(
                 f"SSH to {self.host} recently failed, backing off "
                 f"{int(self._connect_cooldown)}s")
-        try:
-            self.connect()
-        except Exception:
-            self._last_connect_fail = time.time()
-            raise
+        # connect() itself feeds the breaker on failure and resets it on
+        # success, so reconnect-and-retry paths are covered too.
+        self.connect()
         return True
 
     def run_command(self, command, timeout=60, _retried=False, stdin_input=None):

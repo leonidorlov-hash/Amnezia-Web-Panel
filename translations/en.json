@@ -604,5 +604,7 @@
   "assign_user": "User",
   "no_user_option": "— do not link —",
   "stop_peer_title": "Stop",
-  "start_peer_title": "Enable"
+  "start_peer_title": "Enable",
+  "ssh_cooldown_title": "SSH cooldown (sec)",
+  "ssh_cooldown_hint": "Initial delay before reconnecting to an unreachable server. Do not change if the server works fine."
 }
