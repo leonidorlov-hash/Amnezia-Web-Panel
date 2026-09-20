@@ -101,6 +101,11 @@ docker --version
 
     def check_container_running(self):
         """Check if WireGuard container is running."""
+        _st_fn = getattr(self.ssh, 'docker_container_state', None)
+        if _st_fn:
+            _st = _st_fn(self.CONTAINER_NAME)
+            if _st is not None:
+                return _st[1]
         out, _, code = self.ssh.run_sudo_command(
             f"docker ps --filter name=^{self.CONTAINER_NAME}$ --format '{{{{.Status}}}}'"
         )
@@ -108,6 +113,11 @@ docker --version
 
     def check_protocol_installed(self):
         """Check if protocol is installed (container exists)."""
+        _st_fn = getattr(self.ssh, 'docker_container_state', None)
+        if _st_fn:
+            _st = _st_fn(self.CONTAINER_NAME)
+            if _st is not None:
+                return _st[0]
         out, _, code = self.ssh.run_sudo_command(
             f"docker ps -a --filter name=^{self.CONTAINER_NAME}$ --format '{{{{.Names}}}}'"
         )
