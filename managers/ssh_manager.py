@@ -8,8 +8,14 @@ import io
 import time
 import threading
 import logging
+from contextlib import nullcontext
 
 logger = logging.getLogger(__name__)
+
+
+def _conn_lock_of(obj):
+    """_conn_lock, tolerating objects built without __init__ (tests)."""
+    return getattr(obj, '_conn_lock', None) or nullcontext()
 
 
 class SSHManager:
@@ -26,7 +32,12 @@ class SSHManager:
         self._is_root = (username == 'root')
         # Serializes connect/disconnect so concurrent threads (UI request
         # handler + background monitor) cannot race a half-built transport.
-        self._conn_lock = threading.Lock()
+        # RLock: run_command holds it for the whole command (see below) and
+        # the reconnect-retry path re-enters connect() on the same thread.
+        # Holding it during exec is what finally closes the race where
+        # force_disconnect() nulled self.client between ensure_connected()
+        # and exec_command(), surfacing as 'NoneType open_session'.
+        self._conn_lock = threading.RLock()
         # Serializes command/SFTP execution on the shared transport. Pooled
         # managers are used concurrently by request handlers and background
         # threads (traffic sync, conn monitor); without this a failed
@@ -226,8 +237,11 @@ class SSHManager:
         stdin_input, when given, is written to the channel's stdin right after
         exec and the write side is closed (same semantics as a shell pipe).
         Used to feed the sudo password without putting it on the command line.
+
+        _conn_lock is held for the whole command so force_disconnect() (pool
+        eviction) cannot tear down the transport mid-command.
         """
-        with self._exec_lock:
+        with self._exec_lock, _conn_lock_of(self):
             return self._run_command_locked(command, timeout, _retried, stdin_input)
 
     @staticmethod
@@ -336,7 +350,7 @@ class SSHManager:
 
     def upload_file(self, content, remote_path):
         """Upload text content to a remote file via SFTP."""
-        with self._exec_lock:
+        with self._exec_lock, _conn_lock_of(self):
             return self._upload_file_locked(content, remote_path)
 
     def _upload_file_locked(self, content, remote_path):
@@ -375,7 +389,7 @@ class SSHManager:
 
     def download_file(self, remote_path):
         """Download text content from a remote file."""
-        with self._exec_lock:
+        with self._exec_lock, _conn_lock_of(self):
             return self._download_file_locked(remote_path)
 
     def _download_file_locked(self, remote_path):
@@ -390,7 +404,7 @@ class SSHManager:
 
     def file_exists(self, remote_path):
         """Check if a remote file exists."""
-        with self._exec_lock:
+        with self._exec_lock, _conn_lock_of(self):
             return self._file_exists_locked(remote_path)
 
     def _file_exists_locked(self, remote_path):
