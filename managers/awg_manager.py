@@ -1984,7 +1984,24 @@ x_exit_sync() {
                     })
                 return result
         except json.JSONDecodeError:
-            return []
+            if batch is not None:
+                # A truncated/corrupt prefetched read (flaky link, channel
+                # drop mid-batch) must not masquerade as "0 peers": drop the
+                # batch entry and retry with a direct per-container read.
+                logger.warning(
+                    f"clientsTable from prefetch for {container_name} did not "
+                    f"parse; dropping batch and retrying directly")
+                try:
+                    del self.ssh._awg_batch['containers'][container_name]
+                except Exception:
+                    pass
+                return self._get_clients_table(protocol_type)
+            # The direct read itself is corrupt: better to surface an error
+            # (get_server_status reports it, UI shows no number) than to
+            # silently display 0 connections for a server that has peers.
+            raise RuntimeError(
+                f"clientsTable in {container_name} is not valid JSON "
+                f"(truncated read or corrupt file)")
 
     def _save_clients_table(self, protocol_type, clients_table):
         """Save the clients table to the server."""
