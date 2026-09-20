@@ -126,6 +126,41 @@ class PrefetchAwgStateTest(unittest.TestCase):
         self.assertEqual(batch_cmds, [])
         self.assertEqual(mgr._get_clients_table('awg2'), [])
 
+    def test_corrupt_prefetched_clients_falls_back_to_direct_read(self):
+        """A truncated batch read (flaky link) must not show up as 0 peers."""
+        ssh = FakeSSH()
+        ssh.batch_output = (
+            "@@CONTAINER@@ amnezia-awg2\n"
+            "[Interface]\nListenPort = 55424\n"
+            "@@CLIENTS@@\n"
+            '[{"clientId": "PEER_A", "userData": {"clie'  # cut off mid-JSON
+        )
+        mgr = AWGManager(ssh)
+        mgr.prefetch_awg_state(['awg2'])
+
+        clients = mgr._get_clients_table('awg2')
+        # direct read returns '[]' in FakeSSH, but the point is the retry happened
+        self.assertEqual(clients, [])
+        self.assertNotIn('amnezia-awg2', ssh._awg_batch['containers'])
+        direct = [c for c in ssh.commands
+                  if 'clientsTable' in c and not c.startswith('for c in ')]
+        self.assertEqual(len(direct), 1)
+
+    def test_corrupt_direct_clients_read_raises_instead_of_zero(self):
+        ssh = FakeSSH()
+        ssh.ps_output = "amnezia-awg2\texited\n"   # no batch: direct path only
+        ssh.commands = ssh.commands
+        mgr = AWGManager(ssh)
+        # make the direct read return garbage
+        orig = ssh.run_sudo_command
+        def garbage(cmd, timeout=60):
+            if 'clientsTable' in cmd and 'docker exec' in cmd:
+                return '[{"clientId": "BROKEN"', '', 0
+            return orig(cmd, timeout)
+        ssh.run_sudo_command = garbage
+        with self.assertRaises(RuntimeError):
+            mgr._get_clients_table('awg2')
+
 
 if __name__ == '__main__':
     unittest.main()
