@@ -577,5 +577,6 @@
   "peer_poll_title": "Actualisation en direct des pairs",
   "peer_poll_hint": "Fréquence de rafraîchissement automatique de la liste des pairs. 0 = désactivé (par défaut). 5–10 suffit sur les serveurs rapides ; sur les lents, utilisez 300–600 ou laissez désactivé.",
   "peer_poll_off": "désactivé",
-  "peer_poll_sec": "s"
+  "peer_poll_sec": "s",
+  "server_stats_toggle": "Récupérer les stats du serveur (CPU, RAM, disque, trafic). Décoché : aucune requête vers le serveur."
 }

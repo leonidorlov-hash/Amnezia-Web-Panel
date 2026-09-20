@@ -577,5 +577,6 @@
   "peer_poll_title": "节点实时刷新",
   "peer_poll_hint": "节点列表自动刷新的间隔。0 = 关闭(默认)。快的服务器用 5–10 即可;慢的服务器建议 300–600 或保持关闭。",
   "peer_poll_off": "关闭",
-  "peer_poll_sec": "秒"
+  "peer_poll_sec": "秒",
+  "server_stats_toggle": "获取服务器统计（CPU、内存、磁盘、流量）。取消勾选则完全不发起请求。"
 }
