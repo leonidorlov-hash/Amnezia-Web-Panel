@@ -1985,12 +1985,44 @@ x_exit_sync() {
         if batch is not None:
             out = batch['clients']
         else:
+            # A container known to be stopped has nothing to read: answer
+            # empty WITHOUT an exec, instead of failing docker exec on every
+            # poll and spamming the log with 'exit code 1'.
+            try:
+                state_fn = getattr(self.ssh, 'docker_container_state', None)
+                st = state_fn(container_name) if state_fn else None
+            except Exception:
+                st = None
+            if st and st[0] and not st[1]:
+                return []
             clients_table_path = self._clients_table_path()
             out, err, code = self.ssh.run_sudo_command(
                 f"docker exec -i {container_name} cat {clients_table_path} 2>/dev/null"
             )
             if code != 0:
-                return []
+                # Never let a failed read masquerade as an empty table: that
+                # is how a transient docker exec failure once painted every
+                # peer as 'External'. Distinguish the honest empty cases.
+                state = None
+                try:
+                    state_fn = getattr(self.ssh, 'docker_container_state', None)
+                    if state_fn:
+                        state = state_fn(container_name)
+                except Exception:
+                    state = None
+                if state and not state[1]:
+                    # Container exists but is stopped: nothing to read, and
+                    # the UI already shows the card as stopped.
+                    return []
+                # Running (or state unknown): probe the file itself.
+                _, _, fcode = self.ssh.run_sudo_command(
+                    f"docker exec -i {container_name} test -f {clients_table_path}")
+                if fcode == 0:
+                    raise RuntimeError(
+                        f"clientsTable exists in {container_name} but could "
+                        f"not be read (docker exec exit {code}): "
+                        f"{err or 'no output'}")
+                return []  # fresh instance: no clientsTable yet
 
         if not out.strip():
             return []

@@ -148,7 +148,7 @@ class PrefetchAwgStateTest(unittest.TestCase):
 
     def test_corrupt_direct_clients_read_raises_instead_of_zero(self):
         ssh = FakeSSH()
-        ssh.ps_output = "amnezia-awg2\texited\n"   # no batch: direct path only
+        ssh.ps_output = "amnezia-awg2\trunning\n"   # direct path, container up
         ssh.commands = ssh.commands
         mgr = AWGManager(ssh)
         # make the direct read return garbage
@@ -160,6 +160,47 @@ class PrefetchAwgStateTest(unittest.TestCase):
         ssh.run_sudo_command = garbage
         with self.assertRaises(RuntimeError):
             mgr._get_clients_table('awg2')
+
+    def test_stopped_container_reads_nothing(self):
+        """A stopped instance must not be exec-polled on every refresh."""
+        ssh = FakeSSH()
+        ssh.ps_output = "amnezia-awg2\texited\n"
+        mgr = AWGManager(ssh)
+        self.assertEqual(mgr._get_clients_table('awg2'), [])
+        exec_cmds = [c for c in ssh.commands
+                     if 'docker exec' in c and not c.startswith('for c in ')]
+        self.assertEqual(exec_cmds, [])
+
+    def test_unreadable_existing_table_raises(self):
+        """Running container, table exists, cat fails -> honest error."""
+        ssh = FakeSSH()
+        ssh.ps_output = "amnezia-awg2\trunning\n"
+        orig = ssh.run_sudo_command
+        def broken_cat(cmd, timeout=60):
+            if 'cat /opt/amnezia/awg/clientsTable' in cmd:
+                return '', '', 1
+            if 'test -f' in cmd:
+                return '', '', 0
+            return orig(cmd, timeout)
+        ssh.run_sudo_command = broken_cat
+        mgr = AWGManager(ssh)
+        with self.assertRaises(RuntimeError):
+            mgr._get_clients_table('awg2')
+
+    def test_fresh_instance_without_table_is_empty(self):
+        """Running container, no clientsTable yet -> empty, not an error."""
+        ssh = FakeSSH()
+        ssh.ps_output = "amnezia-awg2\trunning\n"
+        orig = ssh.run_sudo_command
+        def no_file(cmd, timeout=60):
+            if 'cat /opt/amnezia/awg/clientsTable' in cmd:
+                return '', '', 1
+            if 'test -f' in cmd:
+                return '', '', 1
+            return orig(cmd, timeout)
+        ssh.run_sudo_command = no_file
+        mgr = AWGManager(ssh)
+        self.assertEqual(mgr._get_clients_table('awg2'), [])
 
 
 if __name__ == '__main__':
