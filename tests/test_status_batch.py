@@ -202,6 +202,25 @@ class PrefetchAwgStateTest(unittest.TestCase):
         mgr = AWGManager(ssh)
         self.assertEqual(mgr._get_clients_table('awg2'), [])
 
+    def test_status_counts_conf_only_peers_as_connections(self):
+        """clients_count must include peers that exist only in awg0.conf
+        (the ones the list renders as 'External')."""
+        ssh = FakeSSH()
+        ssh.ps_output = "amnezia-awg2\trunning\n"
+        ssh.batch_output = (
+            "@@CONTAINER@@ amnezia-awg2\n"
+            "[Interface]\nPrivateKey = SRV\nListenPort = 55424\n\n"
+            "[Peer]\nPublicKey = PEER_A\nAllowedIPs = 10.8.1.2/32\n\n"
+            "[Peer]\nPublicKey = PEER_EXT\nAllowedIPs = 10.8.1.9/32\n"
+            "@@CLIENTS@@\n"
+            '[{"clientId": "PEER_A", "userData": {"clientName": "alice"}}]\n'
+        )
+        mgr = AWGManager(ssh)
+        mgr.prefetch_awg_state(['awg2'])
+        info = mgr.get_server_status('awg2')
+        self.assertEqual(info['clients_count'], 2)
+        self.assertEqual(info['external_count'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()
