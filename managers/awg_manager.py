@@ -2117,14 +2117,6 @@ x_exit_sync() {
                         except Exception:
                             pass
                         return self._get_clients_table(protocol_type)
-                # Diagnostics for the intermittent 'External instead of names'
-                # glitch: log which container the table came from, via which
-                # path, and how many records it held. When a response shows
-                # N named + M External, this line tells whether the read
-                # itself returned a wrong/partial table.
-                logger.info(
-                    f"clientsTable {container_name}: {len(data)} records, "
-                    f"{len(out)} bytes (via {'prefetch batch' if batch is not None else 'direct read'})")
                 return data
             elif isinstance(data, dict):
                 # Migration from old format
@@ -2136,9 +2128,6 @@ x_exit_sync() {
                             'clientName': info.get('clientName', 'Unknown'),
                         }
                     })
-                logger.info(
-                    f"clientsTable {container_name}: {len(result)} records "
-                    f"(legacy dict format, via {'prefetch batch' if batch is not None else 'direct read'})")
                 return result
         except json.JSONDecodeError:
             if batch is not None:
@@ -2598,7 +2587,6 @@ done < "$BW"
                 client['userData'] = user_data
 
         # Pick up peers from conf that are NOT in clientsTable (created via native Amnezia app)
-        conf_peers = {}
         try:
             conf_peers = self._parse_peers_from_config(protocol_type)
             for pub_key, peer_info in conf_peers.items():
@@ -2631,11 +2619,6 @@ done < "$BW"
                 })
         except Exception as e:
             logger.warning(f'get_clients: failed to parse conf peers: {e}')
-        external_added = sum(1 for c in clients_table if c.get('userData', {}).get('externalClient'))
-        logger.info(
-            f"get_clients({protocol_type}): table={len(known_ids)}, "
-            f"conf peers total={len(conf_peers)}, "
-            f"conf-only External appended={external_added}")
 
         # Connection flood monitoring: attach the latest snapshot written by
         # the background collector (collect_conn_stats). Only if the snapshot
