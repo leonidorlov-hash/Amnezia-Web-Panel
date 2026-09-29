@@ -790,7 +790,6 @@ docker --version
             self.ssh._awg_batch = {'_ts': time.time(), 'containers': {}}
             return
         cmd = (
-            'echo "@@HOST@@ $(hostname)"; '
             'for c in ' + ' '.join(containers) + '; do '
             'echo "@@CONTAINER@@ $c"; '
             'docker exec "$c" sh -c \'cat /opt/amnezia/awg/awg0.conf 2>/dev/null; '
@@ -799,12 +798,9 @@ docker --version
         )
         out, err, code = self.ssh.run_sudo_command(cmd, timeout=60)
         batch = {}
-        remote_host = None
         current = None
         for line in (out or '').splitlines():
-            if line.startswith('@@HOST@@ '):
-                remote_host = line.split(' ', 1)[1].strip()
-            elif line.startswith('@@CONTAINER@@ '):
+            if line.startswith('@@CONTAINER@@ '):
                 current = line.split(' ', 1)[1].strip()
                 batch[current] = {'config': [], 'clients': [], 'part': 'config'}
             elif current and line.strip() == '@@CLIENTS@@':
@@ -813,7 +809,6 @@ docker --version
                 batch[current][batch[current]['part']].append(line)
         self.ssh._awg_batch = {
             '_ts': time.time(),
-            '_host': remote_host,
             'containers': {
                 name: {'config': '\n'.join(parts['config']),
                        'clients': '\n'.join(parts['clients'])}
@@ -822,16 +817,12 @@ docker --version
         }
         # Forensics for poisoned batch entries (config of container A paired
         # with clientsTable of container B — observed on NATA 29.09). Section
-        # sizes at build time show exactly what the parser saw; the remote
-        # hostname vs the host the panel THINKS it talks to discriminates
-        # "ran on the wrong box" from "same-box weirdness".
+        # sizes at build time show exactly what the parser saw.
         sections = ', '.join(
             f"{name}: cfg={len(parts['config'])}L, tbl={len(parts['clients'])}L"
             for name, parts in batch.items())
         logger.info(
-            f"prefetch batch built for {getattr(self.ssh, 'host', '?')}: remote host="
-            f"{remote_host or '?'} ({len(out or '')}B output): "
-            f"{sections or 'no sections'}")
+            f"prefetch batch built ({len(out or '')}B output): {sections or 'no sections'}")
 
     def _batch_entry(self, container_name):
         batch = getattr(self.ssh, '_awg_batch', None)
@@ -2116,8 +2107,7 @@ x_exit_sync() {
                                if c.get('clientId', '') not in conf_text]
                     if missing:
                         logger.warning(
-                            f"clientsTable {container_name} on {getattr(self.ssh, 'host', '?')} "
-                            f"from prefetch is "
+                            f"clientsTable {container_name} from prefetch is "
                             f"inconsistent with its own batch config "
                             f"({len(missing)}/{len(data)} table pubkeys absent "
                             f"from config, e.g. {missing[0][:12]}...); dropping "
@@ -2133,8 +2123,7 @@ x_exit_sync() {
                 # N named + M External, this line tells whether the read
                 # itself returned a wrong/partial table.
                 logger.info(
-                    f"clientsTable {container_name} on {getattr(self.ssh, 'host', '?')}: "
-                    f"{len(data)} records, "
+                    f"clientsTable {container_name}: {len(data)} records, "
                     f"{len(out)} bytes (via {'prefetch batch' if batch is not None else 'direct read'})")
                 return data
             elif isinstance(data, dict):
@@ -2148,8 +2137,7 @@ x_exit_sync() {
                         }
                     })
                 logger.info(
-                    f"clientsTable {container_name} on {getattr(self.ssh, 'host', '?')}: "
-                    f"{len(result)} records "
+                    f"clientsTable {container_name}: {len(result)} records "
                     f"(legacy dict format, via {'prefetch batch' if batch is not None else 'direct read'})")
                 return result
         except json.JSONDecodeError:
@@ -2645,8 +2633,7 @@ done < "$BW"
             logger.warning(f'get_clients: failed to parse conf peers: {e}')
         external_added = sum(1 for c in clients_table if c.get('userData', {}).get('externalClient'))
         logger.info(
-            f"get_clients({protocol_type}) on {getattr(self.ssh, 'host', '?')}: "
-            f"table={len(known_ids)}, "
+            f"get_clients({protocol_type}): table={len(known_ids)}, "
             f"conf peers total={len(conf_peers)}, "
             f"conf-only External appended={external_added}")
 

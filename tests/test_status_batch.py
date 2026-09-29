@@ -12,7 +12,6 @@ class FakeSSH:
         self.commands = []
         self.ps_output = "amnezia-awg2\trunning\namnezia-awg3\texited\n"
         self.batch_output = (
-            "@@HOST@@ test-host\n"
             "@@CONTAINER@@ amnezia-awg2\n"
             "[Interface]\nPrivateKey = SRV\nListenPort = 55424\n"
             "[Peer]\nPublicKey = PEER_A\nAllowedIPs = 10.8.1.2/32\n"
@@ -24,7 +23,7 @@ class FakeSSH:
         self.commands.append(cmd)
         if cmd.startswith('docker ps -a --format'):
             return self.ps_output, '', 0
-        if cmd.startswith('for c in ') or cmd.startswith('echo "@@HOST@@ '):
+        if cmd.startswith('for c in '):
             return self.batch_output, '', 0
         if 'cat /opt/amnezia/awg/awg0.conf' in cmd and 'docker exec' in cmd:
             return '[Interface]\nListenPort = 55424\n', '', 0
@@ -96,14 +95,11 @@ class PrefetchAwgStateTest(unittest.TestCase):
         mgr = AWGManager(ssh)
 
         mgr.prefetch_awg_state(['awg2', 'awg3', 'awg2__2'])
-        batch_cmds = [c for c in ssh.commands
-                      if c.startswith('echo "@@HOST@@ ') and 'for c in' in c]
+        batch_cmds = [c for c in ssh.commands if c.startswith('for c in ')]
         self.assertEqual(len(batch_cmds), 1)
         # only the running container is dumped
         self.assertIn('amnezia-awg2', batch_cmds[0])
         self.assertNotIn('amnezia-awg3', batch_cmds[0])
-        # the remote hostname is captured for poison forensics
-        self.assertEqual(ssh._awg_batch['_host'], 'test-host')
 
         config = mgr._get_server_config('awg2')
         clients = mgr._get_clients_table('awg2')
@@ -112,7 +108,7 @@ class PrefetchAwgStateTest(unittest.TestCase):
         self.assertEqual(clients[0]['clientId'], 'PEER_A')
 
         exec_cmds = [c for c in ssh.commands
-                     if 'docker exec' in c and 'for c in' not in c]
+                     if 'docker exec' in c and not c.startswith('for c in ')]
         self.assertEqual(exec_cmds, [], f"no per-container exec expected after prefetch: {exec_cmds}")
 
     def test_poisoned_batch_entry_is_detected_and_reread_directly(self):
@@ -134,7 +130,7 @@ class PrefetchAwgStateTest(unittest.TestCase):
         # FakeSSH answers '[]' to any direct clientsTable read.
         self.assertEqual(clients, [])
         exec_cmds = [c for c in ssh.commands
-                     if 'docker exec' in c and 'for c in' not in c]
+                     if 'docker exec' in c and not c.startswith('for c in ')]
         self.assertTrue(exec_cmds,
                         "direct read expected after poisoned batch entry was dropped")
         self.assertNotIn('amnezia-awg2', ssh._awg_batch['containers'],
@@ -173,7 +169,7 @@ class PrefetchAwgStateTest(unittest.TestCase):
         self.assertEqual(clients, [])
         self.assertNotIn('amnezia-awg2', ssh._awg_batch['containers'])
         direct = [c for c in ssh.commands
-                  if 'clientsTable' in c and 'for c in' not in c]
+                  if 'clientsTable' in c and not c.startswith('for c in ')]
         self.assertEqual(len(direct), 1)
 
     def test_corrupt_direct_clients_read_raises_instead_of_zero(self):
@@ -198,7 +194,7 @@ class PrefetchAwgStateTest(unittest.TestCase):
         mgr = AWGManager(ssh)
         self.assertEqual(mgr._get_clients_table('awg2'), [])
         exec_cmds = [c for c in ssh.commands
-                     if 'docker exec' in c and 'for c in' not in c]
+                     if 'docker exec' in c and not c.startswith('for c in ')]
         self.assertEqual(exec_cmds, [])
 
     def test_unreadable_existing_table_raises(self):
