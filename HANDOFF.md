@@ -343,3 +343,8 @@
 - В v1.7.1 у апстрима есть диагностическое логирование 39c155a (вошло через #195); в нашей ветке оно нейтрализовано revert'ами da2abdb/26ac540. Итог на проде ПРОВЕРЕН grep'ом по коду: @@HOST@@-форензики НЕТ, per-read INFO-логов НЕТ; живут только сторож 4d0db9f + его warning + строка «prefetch batch built». diff v1.7.1..HEAD = HANDOFF + awg_manager (сторож, минус diag-логи) + тесты.
 - Мерж v1.7.1 в deploy/v170 чистый (41450d6), конфликтов нет (дубль порога 900: ee9dbf2 vs 5b97881 — одинаковое изменение, git слил сам). 468 тестов OK.
 - Раскатка: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel.
+
+## 29.09 15:55 — CSS-правки: ветка fix/css-ux-tweaks (61a4762), слита в deploy/v170
+- Накопительная ветка для отдельного апстрим-PR (по решению владельца — потом): fix/css-ux-tweaks. Сейчас содержит: (1) .protocol-ctrl button.btn.btn-secondary.btn-sm { padding: 6px 5px } (страница сервера); (2) #userConnsModal .modal { max-width: 1160px } (страница /users, в style.css); (3) #userConnsList max-height 400px→700px (templates/users.html).
+- Влито в deploy/v170 (fast-forward, 61a4762) и запушено — SERVERA получит тем же обновлением.
+- ВНИМАНИЕ: раскатка 15:41 пользователя попала на 910be28 — ДО мержа v1.7.1 (41450d6) и этих CSS-правок. Нужна повторная раскатка той же командой.
