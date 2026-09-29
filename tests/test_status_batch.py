@@ -14,6 +14,7 @@ class FakeSSH:
         self.batch_output = (
             "@@CONTAINER@@ amnezia-awg2\n"
             "[Interface]\nPrivateKey = SRV\nListenPort = 55424\n"
+            "[Peer]\nPublicKey = PEER_A\nAllowedIPs = 10.8.1.2/32\n"
             "@@CLIENTS@@\n"
             '[{"clientId": "PEER_A", "userData": {"clientName": "alice"}}]\n'
         )
@@ -109,6 +110,31 @@ class PrefetchAwgStateTest(unittest.TestCase):
         exec_cmds = [c for c in ssh.commands
                      if 'docker exec' in c and not c.startswith('for c in ')]
         self.assertEqual(exec_cmds, [], f"no per-container exec expected after prefetch: {exec_cmds}")
+
+    def test_poisoned_batch_entry_is_detected_and_reread_directly(self):
+        """A mixed batch entry (config of container A + clientsTable of
+        container B, observed on NATA) must not be trusted: the table
+        pubkeys are absent from the entry's own config, so the entry is
+        dropped and the table is read directly."""
+        ssh = FakeSSH()
+        ssh.batch_output = (
+            "@@CONTAINER@@ amnezia-awg2\n"
+            "[Interface]\nPrivateKey = SRV\nListenPort = 55424\n"
+            "[Peer]\nPublicKey = PEER_A\nAllowedIPs = 10.8.1.2/32\n"
+            "@@CLIENTS@@\n"
+            '[{"clientId": "ALIEN_PUBKEY", "userData": {"clientName": "eve"}}]\n'
+        )
+        mgr = AWGManager(ssh)
+        mgr.prefetch_awg_state(['awg2'])
+        clients = mgr._get_clients_table('awg2')
+        # FakeSSH answers '[]' to any direct clientsTable read.
+        self.assertEqual(clients, [])
+        exec_cmds = [c for c in ssh.commands
+                     if 'docker exec' in c and not c.startswith('for c in ')]
+        self.assertTrue(exec_cmds,
+                        "direct read expected after poisoned batch entry was dropped")
+        self.assertNotIn('amnezia-awg2', ssh._awg_batch['containers'],
+                         "poisoned batch entry must be removed")
 
     def test_batch_cache_expires(self):
         ssh = FakeSSH()
