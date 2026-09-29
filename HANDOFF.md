@@ -329,3 +329,10 @@
 - ФОРЕНЗИКА a5b463a: батч-команда теперь начинается с `echo "@@HOST@@ $(hostname)"`, парсер кладёт хост в _awg_batch['_host'], все логи (batch built / clientsTable / get_clients / warning сторожа) несут host панели и remote host. Следующее срабатывание сразу покажет: remote host ≠ host панели → выполнилось на чужом боксе; равны → same-box странность (тогда следующий шаг: md5sum файла в батче).
 - Заодно объяснена строка `get_clients(awg2): table=0, conf=0` в журнале (12:53:46): легальный путь — контейнер exists-but-stopped → пустой ответ БЕЗ docker exec (код ~2061) + conf 0. Не аномалия.
 - Раскатка как обычно: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel. Запрос журнала при следующем WARNING сторожа: journalctl -u amnezia-panel -n 300 | grep -E "clientsTable|get_clients|prefetch batch|inconsistent".
+
+## 29.09 14:55 — Диагностика External убрана с прода (revert 39c155a + a5b463a)
+- Решение владельца: диагностические инструменты (per-read INFO-логи 39c155a, форензика хоста a5b463a) не нужны на SERVERA и не пойдут в PR. Откачены revert-коммитами da2abdb + 26ac540 (конфликт 26ac540 разрешён вручную: сторож сохранён, diag-лог убран). 468 тестов OK.
+- НА ПРОДЕ ОСТАЛОСЬ от этой линии: сторож 4d0db9f (выбрасывает отравленную батч-запись + прямое чтение) + одна INFO-строка «prefetch batch built (NB output): sections» на батч + WARNING сторожа при срабатывании. Нагрузка: только при чтении из батч-кэша, подстрока по ~71 записям — доли мс, без SSH.
+- ВАЖНО для следующих чатов: КОРЕНЬ БАГА НЕ НАЙДЕН. External перестал быть виден, потому что сторож маскирует симптом (самолечение ~1с). Дыра (смешанная батч-запись: conf контейнера A + таблица контейнера B) не локализована — ни same-host, ни cross-host версия не подтверждены. Без сторожа баг вернётся. Если External когда-нибудь всплывёт снова — смотреть git log на эти revert'ы.
+- Оставшиеся «External (native app)» на NATA — пиры, созданные нативным приложением Amnezia (отключены там же, из clientsTable стёрты); владелец удалит их вручную, правка не требуется.
+- Раскатка: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel.
