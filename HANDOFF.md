@@ -355,3 +355,7 @@
 - ФИКС 2697223 (deploy/v170): (1) /uninstall чистит user_connections по паре (server_id, protocol) — как при удалении сервера/юзера; (2) /api/users/{id}/connections фильтрует ссылки на неустановленные инстансы (пояс для старых записей). 468 тестов OK.
 - Разовая чистка на SERVERA выполнена командой (backup data.json.bak-<ts> + purge фантомов) — владельцем, до раскатки фикса (порядок некритичен: фильтр в эндпоинте и так скроет остатки).
 - Кандидат в апстрим-PR (настоящий баг, воспроизводим). Раскатка обычной командой.
+
+## 29.09 21:00 — PR #198 в апстрим: purge user_connections при uninstall
+- Ветка fix/uninstall-purge-connections (a6cced7, чистый черри-пик 2697223 от upstream/main). PR #198 → PRVTPRO/Amnezia-Web-Panel, base main, maintainer_can_modify=true, описание EN (проблема/ repro/фикс).
+- На проде (deploy/v170) фикс живёт с 20:46 (2697223), SERVERA раскатан на d0c10d7. data.json почищен владельцем (10 фантомов, бэкап data.json.bak-*).
