@@ -14,6 +14,7 @@ class FakeSSH:
         self.batch_output = (
             "@@CONTAINER@@ amnezia-awg2\n"
             "[Interface]\nPrivateKey = SRV\nListenPort = 55424\n"
+            "[Peer]\nPublicKey = PEER_A\nAllowedIPs = 10.8.1.2/32\n"
             "@@CLIENTS@@\n"
             '[{"clientId": "PEER_A", "userData": {"clientName": "alice"}}]\n'
         )

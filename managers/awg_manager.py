@@ -824,6 +824,14 @@ docker --version
                 for name, parts in batch.items()
             },
         }
+        # Forensics for poisoned batch entries (config of container A paired
+        # with clientsTable of container B — observed on NATA 29.09). Section
+        # sizes at build time show exactly what the parser saw.
+        sections = ', '.join(
+            f"{name}: cfg={len(parts['config'])}L, tbl={len(parts['clients'])}L"
+            for name, parts in batch.items())
+        logger.info(
+            f"prefetch batch built ({len(out or '')}B output): {sections or 'no sections'}")
 
     def _batch_entry(self, container_name):
         batch = getattr(self.ssh, '_awg_batch', None)
@@ -2115,6 +2123,28 @@ x_exit_sync() {
         try:
             data = json.loads(out)
             if isinstance(data, list):
+                if batch is not None and data:
+                    # Integrity guard against a poisoned prefetch batch: a
+                    # batch entry must contain ONE container's files. A mixed
+                    # entry (config of container A + clientsTable of container
+                    # B) once painted 68 of 71 awg2 peers as 'External' on
+                    # NATA: the table pubkeys must exist in the SAME entry's
+                    # config; otherwise drop the entry and read directly.
+                    conf_text = batch.get('config') or ''
+                    missing = [c.get('clientId', '') for c in data
+                               if c.get('clientId', '') not in conf_text]
+                    if missing:
+                        logger.warning(
+                            f"clientsTable {container_name} from prefetch is "
+                            f"inconsistent with its own batch config "
+                            f"({len(missing)}/{len(data)} table pubkeys absent "
+                            f"from config, e.g. {missing[0][:12]}...); dropping "
+                            f"batch entry and reading directly")
+                        try:
+                            del self.ssh._awg_batch['containers'][container_name]
+                        except Exception:
+                            pass
+                        return self._get_clients_table(protocol_type)
                 # Diagnostics for the intermittent 'External instead of names'
                 # glitch: log which container the table came from, via which
                 # path, and how many records it held. When a response shows
