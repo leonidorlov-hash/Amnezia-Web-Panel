@@ -359,3 +359,8 @@
 ## 29.09 21:00 — PR #198 в апстрим: purge user_connections при uninstall
 - Ветка fix/uninstall-purge-connections (a6cced7, чистый черри-пик 2697223 от upstream/main). PR #198 → PRVTPRO/Amnezia-Web-Panel, base main, maintainer_can_modify=true, описание EN (проблема/ repro/фикс).
 - На проде (deploy/v170) фикс живёт с 20:46 (2697223), SERVERA раскатан на d0c10d7. data.json почищен владельцем (10 фантомов, бэкап data.json.bak-*).
+
+## 30.09 22:55 — Аудит флота по security issue #197 (CashPilot/Bitping/TraffMonetizer) — ВСЕ ЧИСТО
+- Issue #197 (PRVTPRO/Amnezia-Web-Panel): у постороннего пользователя на VPS с панелью найдены монетизационные контейнеры (cashpilot-worker с docker.sock, bitping, traffmonetizer, /var/cpp, C2 185.106.120.202:54623). Автор панели: проект не причастен, источник не подтверждён.
+- Скрипт /tmp/fleet_audit.py на SERVERA опросил все 9 серверов из data.json + сам хост панели (контейнеры/образы/вольюмы/сети, файлы, /var/cpp, порт 8081, conntrack к C2, journal dockerd, bash_history, cron, systemd). Результат: 10/10 clean (SERVERA, servera 46.183, FINN, RAHMET, NATA, EUROBYTE, FIRSTBYTE, CloudPark.by, MAMKAM, MRAK).
+- Оговорка зафиксирована: отрицательный результат ≠ гарантия (docker.sock = root, следы можно замести). Скрипт остался на SERVERA в /tmp/fleet_audit.py — переиспользуем при подозрениях.
