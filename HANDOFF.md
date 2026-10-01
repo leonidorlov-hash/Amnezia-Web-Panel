@@ -410,3 +410,10 @@
 - Тесты: локально 12 ошибок test_rendered_pages_javascript_all_locales — ЭНВАЙРОНМЕНТАЛЬНО (node-шим command-process-owner не исполняется через CreateProcess; skipUnless(which) обходится). JS валиден (node Function-parse OK). На SERVERA прогнать при деплое.
 - Деплой на SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel; в браузере Ctrl+Shift+R (менялся server.html!).
 - УРОК: локальные прогоны тестов на Windows требуют настоящий node.exe — шим kimi-desktop (command-process-owner/bin/node) не исполняется через CreateProcess, тест test_rendered_pages_javascript_all_locales падает с WinError 2. Запуск: PATH="/c/Program Files/nodejs:$PATH" venv/Scripts/python.exe -m unittest discover -s tests → 470 OK (skipped=1) на обеих ветках, включая фикс e14eab7.
+
+## 02.10 ~00:05 — Тогглы при быстрых кликах: retry read-back + один тоггл за раз (0938658, deploy/v170)
+- Симптом: «Peer ... is still present in config right after disable» при быстрой серии кликов. Это штатная защита 37a7ea1 (громкий отказ вместо тихого рассинхрона), но срабатывала на честной гонке: тогглы = параллельные HTTP-запросы, каждый переписывает конфиг целиком → read-back видел до-записное состояние.
+- Фикс: read-back при mismatch ретраится до 3 раз с паузой 0.6с (awg_manager + wireguard_manager); фронт — глобальный флаг peerToggling (одна лампочка за раз на инстанс, ранее был только per-row лок) + тост conn_toggle_busy в 5 локалях. Честная RuntimeError оставлена как последняя линия.
+- Проверки: JS_OK, все локали валидны, 470 тестов OK (skipped=1). Запушено в deploy/v170. В v160 НЕ бэкпортировано (legacy, прод на v170).
+- Деплой на SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel + Ctrl+Shift+R в браузере.
+- На очереди: комментарий в issue #199 про гонку loadConnections (предложено владельцу, ждёт подтверждения).
