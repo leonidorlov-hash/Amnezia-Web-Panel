@@ -423,3 +423,10 @@
 - PR #200: "fix(ui): stale connections response rendered under the wrong instance (likely #199)" — EN, корень (proto захватывается при вызове, ответ рендерится без сверки селектора, клик в полёте глотался connLoading), верификация на флоте (External не воспроизводится).
 - Комментарий в issue #199 со ссылкой на #200.
 - Замечено: upstream/main ушёл вперёд — автор мержит наши PR (#198 виден в логе). При случае сверить статусы #195/#196.
+
+## 02.10 ~01:10 — Подсветка активного инстанса + CSS-пак (13bd7d3 v170, PR #201)
+- Фича владельца: на странице сервера выбранный инстанс (чьи пиры в списке) подсвечивается рамкой 2px #7c3aed (.protocol-card.active), markActiveProtocolCard() зовётся из loadConnections — синхронно с селектором, кнопками карточек и поллами. Первый инстанс активен при входе (уже авто-выбирался checkServer, теперь виден визуально).
+- Плюс CSS: .btn-sm 14→12px, protocol-ctrl кнопки 6px 5px, #userConnsModal 1160px (61a4762). Это ВЕСЬ неотправленный CSS-хвост — остальное уже в апстриме.
+- PR #201 в апстрим: feat/active-instance-card (4ea92ca + c334cf8), 470 тестов OK. v170: 13bd7d3 запушен.
+- Замечено: тест test_awg_mtu_budget.test_awg3_default_would_not_fit_a_standard_link ФЛАКИ (падает и без наших правок, 1495 vs 1500 — зависит от окружения/рандома? при повторе зелёный). Кандидат на отдельный разбор.
+- Деплой SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel + Ctrl+Shift+R.
