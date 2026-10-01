@@ -364,3 +364,10 @@
 - Issue #197 (PRVTPRO/Amnezia-Web-Panel): у постороннего пользователя на VPS с панелью найдены монетизационные контейнеры (cashpilot-worker с docker.sock, bitping, traffmonetizer, /var/cpp, C2 185.106.120.202:54623). Автор панели: проект не причастен, источник не подтверждён.
 - Скрипт /tmp/fleet_audit.py на SERVERA опросил все 9 серверов из data.json + сам хост панели (контейнеры/образы/вольюмы/сети, файлы, /var/cpp, порт 8081, conntrack к C2, journal dockerd, bash_history, cron, systemd). Результат: 10/10 clean (SERVERA, servera 46.183, FINN, RAHMET, NATA, EUROBYTE, FIRSTBYTE, CloudPark.by, MAMKAM, MRAK).
 - Оговорка зафиксирована: отрицательный результат ≠ гарантия (docker.sock = root, следы можно замести). Скрипт остался на SERVERA в /tmp/fleet_audit.py — переиспользуем при подозрениях.
+
+## 01.10 21:50 — EUROBYTE WG: «половинчатое отключение» пира RomanSakaev8 (10.8.0.30)
+- Симптом: пир выключен по лампочке, включение → «Cannot enable client: IP 10.8.0.30 is already present in the active server config»; при этом пир жив (трафик).
+- Диагностика (команды пользователя на EUROBYTE): пир есть в `wg show wg0 allowed-ips` И в wg0.conf (1 раз) — WireGuard-уровень: включён. clientsTable: enabled=false, clientIp=10.8.0.30 — панель-уровень: выключен.
+- ВЫВОД: старое отключение через toggle_client записало enabled=false, но удаление [Peer] из wg0.conf не применилось. Причина гипотетически: код disable-пути (awg_manager.toggle_client ~3230-3250) НЕ проверяет результат upload_file/docker cp/syncconf — ошибка проглатывается, таблица уже перезаписана.
+- ЛЕЧЕНИЕ (выполнено владельцем на EUROBYTE): бэкап clientsTable → /tmp/ct.json.bak, в записи пира выставлено enabled=true, файл возвращён в контейнер через docker cp. Пир и не отключался реально.
+- КАНДИДАТ В ФИКС (не сделан): toggle_client disable-путь должен верифицировать перезапись конфига (код возврата docker cp + syncconf, либо пост-проверка отсутствия паблика в конфиге) и не сохранять enabled=false при провале; enable-путь при «IP already present» может предлагать автопочинку рассинхрона.
