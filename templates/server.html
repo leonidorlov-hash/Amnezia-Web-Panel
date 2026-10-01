@@ -3339,12 +3339,23 @@
             return;
         }
 
-        if (window.connLoading) return; // don't stack overlapping polls
+        // A click while a load is in flight must not be dropped: remember it
+        // and re-run for the CURRENT selector value when the flight ends.
+        // Otherwise the in-flight (older) protocol renders its peers into a
+        // grid already labelled with the newly selected protocol — the
+        // "peers of the neighboring instance" race on laggy links.
+        if (window.connLoading) {
+            window.connPending = true;
+            return;
+        }
         window.connLoading = true;
         if (!isPoll) loading.style.display = ''; // silent refresh on polls
         emptyEl.classList.add('hidden');
         try {
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
+            // Stale response: the user switched protocol while we awaited —
+            // drop it, the pending re-run below will fetch the right one.
+            if (proto !== document.getElementById('connProtoSelect').value) return;
             // The rename editor may have opened while this poll was in flight —
             // re-rendering now would destroy it mid-typing.
             if (isPoll && !force && listEl.querySelector('.rename-editor')) return;
@@ -3453,6 +3464,13 @@
         } finally {
             window.connLoading = false;
             highlightPeerFromQuery();
+            // A switch was requested mid-flight: load the currently selected
+            // protocol now (the stale response above was dropped).
+            if (window.connPending) {
+                window.connPending = false;
+                loadConnections();
+                return;
+            }
             // Live refresh while the connections section is visible; the
             // interval is opt-in per server (0 = off, management modal).
             clearTimeout(window.connPollTimer);
