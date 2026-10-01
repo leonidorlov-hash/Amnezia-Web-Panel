@@ -417,3 +417,9 @@
 - Проверки: JS_OK, все локали валидны, 470 тестов OK (skipped=1). Запушено в deploy/v170. В v160 НЕ бэкпортировано (legacy, прод на v170).
 - Деплой на SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel + Ctrl+Shift+R в браузере.
 - На очереди: комментарий в issue #199 про гонку loadConnections (предложено владельцу, ждёт подтверждения).
+
+## 02.10 ~00:35 — PR #200 (фикс гонки loadConnections) + комментарий в issue #199
+- Ветка fix/connections-stale-race от свежего upstream/main (2c415f3 — автор смержил наш #198 uninstall-purge!), cherry-pick e14eab7 → 5ccb3b4, 470 тестов OK, запушено.
+- PR #200: "fix(ui): stale connections response rendered under the wrong instance (likely #199)" — EN, корень (proto захватывается при вызове, ответ рендерится без сверки селектора, клик в полёте глотался connLoading), верификация на флоте (External не воспроизводится).
+- Комментарий в issue #199 со ссылкой на #200.
+- Замечено: upstream/main ушёл вперёд — автор мержит наши PR (#198 виден в логе). При случае сверить статусы #195/#196.
