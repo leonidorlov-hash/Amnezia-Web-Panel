@@ -685,5 +685,6 @@
   "mail_skip_bad_email": "adresse e-mail invalide",
   "mail_skip_disabled": "utilisateur désactivé",
   "mail_test_hint": "Le test utilise les paramètres enregistrés : cliquez d’abord sur Enregistrer.",
-  "mail_link_label": "Lien"
+  "mail_link_label": "Lien",
+  "conn_toggle_busy": "Un autre pair est en cours de bascule — patientez une seconde"
 }
