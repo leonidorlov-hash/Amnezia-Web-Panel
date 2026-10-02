@@ -430,3 +430,9 @@
 - PR #201 в апстрим: feat/active-instance-card (4ea92ca + c334cf8), 470 тестов OK. v170: 13bd7d3 запушен.
 - Замечено: тест test_awg_mtu_budget.test_awg3_default_would_not_fit_a_standard_link ФЛАКИ (падает и без наших правок, 1495 vs 1500 — зависит от окружения/рандома? при повторе зелёный). Кандидат на отдельный разбор.
 - Деплой SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel + Ctrl+Shift+R.
+
+## 02.10 ~10:40 — Остаточная дыра «empty batch clientsTable» закрыта (7fff9bc v170, добито в PR #200)
+- Триаж чужого анализа (по свежему клону апстрима): механика External верна; «фронт периодически опрашивает» — устарело (поллинг выкл по дефолту, #177); цитируемые лог-строки — галлюцинация; причина 2 (окно conf↔таблица при создании) — реальна, безвредна. ПОЛЕЗНОЕ: нашли остаточную дыру — в batch-префетче per-part exit-коды не проверяются, transient-сбой cat внутри составной команды даёт пустую секцию clients при живом конфиге → return [] → External на один опрос (e2e80c5 ловил только битый JSON, не пустую строку).
+- Фикс 7fff9bc: пустая prefetched-таблица + конфиг с PublicKey → дроп batch-записи и прямое перечитывание; пустая таблица + конфиг без пиров (свежий инстанс) → [] без лишних чтений. +2 регрессионных теста (14 в test_status_batch), полный прогон 472 OK.
+- PR #200 расширен вторым коммитом (ad72fc0) — теперь «fix(ui+awg): stale response + distrust empty prefetched clientsTable», описание обновлено (2 коренные причины, 472 теста).
+- Деплой SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel (бэкенд-фикс, Ctrl+Shift+R не критичен, но менялся и фронт ранее).
