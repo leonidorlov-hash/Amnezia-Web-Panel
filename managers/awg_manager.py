@@ -789,24 +789,33 @@ docker --version
         if not containers:
             self.ssh._awg_batch = {'_ts': time.time(), 'containers': {}}
             return
+        # The trailing `echo` inside sh -c matters: when awg0.conf or
+        # clientsTable has no trailing newline, `cat` leaves the cursor
+        # mid-line and the next marker gets glued to the payload's last
+        # line (observed on FIRSTBYTE: all three containers' dumps merged
+        # into one section -> the awg2 card counted ~120 union peers).
         cmd = (
             'for c in ' + ' '.join(containers) + '; do '
             'echo "@@CONTAINER@@ $c"; '
             'docker exec "$c" sh -c \'cat /opt/amnezia/awg/awg0.conf 2>/dev/null; '
-            'echo "@@CLIENTS@@"; cat /opt/amnezia/awg/clientsTable 2>/dev/null\'; '
+            'echo; echo "@@CLIENTS@@"; '
+            'cat /opt/amnezia/awg/clientsTable 2>/dev/null; echo\'; '
             'done'
         )
         out, err, code = self.ssh.run_sudo_command(cmd, timeout=60)
         batch = {}
         current = None
-        for line in (out or '').splitlines():
-            if line.startswith('@@CONTAINER@@ '):
-                current = line.split(' ', 1)[1].strip()
+        # Belt and braces: split on markers found anywhere in the stream,
+        # not only at line start, so even a glued marker still separates
+        # sections (the payload fragment before it stays with its owner).
+        for piece in re.split(r'(@@CONTAINER@@ [^\n]+|@@CLIENTS@@)', out or ''):
+            if piece.startswith('@@CONTAINER@@ '):
+                current = piece.split(' ', 1)[1].strip()
                 batch[current] = {'config': [], 'clients': [], 'part': 'config'}
-            elif current and line.strip() == '@@CLIENTS@@':
+            elif current and piece.strip() == '@@CLIENTS@@':
                 batch[current]['part'] = 'clients'
             elif current:
-                batch[current][batch[current]['part']].append(line)
+                batch[current][batch[current]['part']].extend(piece.splitlines())
         self.ssh._awg_batch = {
             '_ts': time.time(),
             'containers': {

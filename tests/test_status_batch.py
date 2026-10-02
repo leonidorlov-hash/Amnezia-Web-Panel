@@ -136,6 +136,52 @@ class PrefetchAwgStateTest(unittest.TestCase):
         self.assertNotIn('amnezia-awg2', ssh._awg_batch['containers'],
                          "poisoned batch entry must be removed")
 
+    def test_glued_markers_still_split_sections(self):
+        """A dump file without a trailing newline glues the next marker
+        onto the payload's last line (observed on FIRSTBYTE: three
+        containers merged into one awg2 section and the card counted
+        ~119 union peers instead of 67). The parser must still split
+        sections at embedded markers."""
+        ssh = FakeSSH()
+        ssh.ps_output = ("amnezia-awg2\trunning\namnezia-awg2-2\trunning\n"
+                         "amnezia-awg3\trunning\n")
+        ssh.batch_output = (
+            "@@CONTAINER@@ amnezia-awg2\n"
+            "[Interface]\nPrivateKey = S1\nListenPort = 1\n"
+            "[Peer]\nPublicKey = K1\nAllowedIPs = 10.8.1.2/32\n"
+            "@@CLIENTS@@\n"
+            '[{"clientId": "K1", "userData": {"clientName": "a"}}]'  # no \n
+            "@@CONTAINER@@ amnezia-awg2-2\n"
+            "[Interface]\nPrivateKey = S2\nListenPort = 2\n"
+            "[Peer]\nPublicKey = K2\nAllowedIPs = 10.8.2.2/32"  # no \n
+            "@@CLIENTS@@\n"
+            '[{"clientId": "K2", "userData": {"clientName": "b"}}]\n'
+            "@@CONTAINER@@ amnezia-awg3\n"
+            "[Interface]\nPrivateKey = S3\nListenPort = 3\n"
+            "[Peer]\nPublicKey = K3\nAllowedIPs = 10.8.3.2/32\n"
+            "@@CLIENTS@@\n"
+            '[{"clientId": "K3", "userData": {"clientName": "c"}}]\n'
+        )
+        mgr = AWGManager(ssh)
+        mgr.prefetch_awg_state(['awg2', 'awg2__2', 'awg3'])
+
+        cfg2 = mgr._get_server_config('awg2')
+        self.assertIn('K1', cfg2)
+        self.assertNotIn('K2', cfg2)
+        self.assertNotIn('K3', cfg2)
+        cfg22 = mgr._get_server_config('awg2__2')
+        self.assertIn('K2', cfg22)
+        self.assertNotIn('K1', cfg22)
+        self.assertNotIn('K3', cfg22)
+        cfg3 = mgr._get_server_config('awg3')
+        self.assertIn('K3', cfg3)
+        self.assertNotIn('K1', cfg3)
+
+        names = {p: [c.get('userData', {}).get('clientName')
+                     for c in mgr._get_clients_table(p)]
+                 for p in ('awg2', 'awg2__2', 'awg3')}
+        self.assertEqual(names, {'awg2': ['a'], 'awg2__2': ['b'], 'awg3': ['c']})
+
     def test_batch_cache_expires(self):
         ssh = FakeSSH()
         mgr = AWGManager(ssh)
