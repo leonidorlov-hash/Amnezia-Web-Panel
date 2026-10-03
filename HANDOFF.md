@@ -75,3 +75,6 @@
 - Симптом: после перевода панели на https-домен (DuckDNS) Chrome подставлял сохранённый логин в фильтр #userSearch на /users. Причина: эвристика автозаполнения — id поля содержит «user», на странице есть type="password» (форма addUserForm) → Chrome считает поле логином.
 - Фикс: users.html input#userSearch → autocomplete="off" + readonly, снятие readonly в onfocus (стандартный обход автозаполнения; readonly-поля менеджеры паролей не трогают, а перед вводом readonly снимается). Тесты 484/484 OK.
 - Раскатка: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel + Ctrl+Shift+R (менялся users.html).
+
+## 03.10 22:50 — PR #204 в апстрим: фикс автозаполнения #userSearch
+- Ветка fix/users-search-autofill от upstream/main (v1.7.3), черри-пик 738ce50, HANDOFF из коммита убран (не течёт в апстрим). 484 теста OK. PR: https://github.com/PRVTPRO/Amnezia-Web-Panel/pull/204
