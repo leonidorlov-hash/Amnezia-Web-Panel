@@ -6197,8 +6197,12 @@ def _duckdns_issue_cert(domain, token):
     cmd = [acme, '--install-cert', '-d', domain,
            '--key-file', key_file, '--fullchain-file', cert_file]
     if os.environ.get('INVOCATION_ID'):
-        # renewed cert -> restart the panel so uvicorn picks it up
-        cmd += ['--reloadcmd', 'systemctl restart amnezia-panel']
+        # renewed/installed cert -> restart the panel so uvicorn picks it up.
+        # Delayed AND detached: a plain 'systemctl restart' here would kill
+        # the very HTTP request that is running this install-cert (observed
+        # on the first apply: files installed, child SIGTERMed, 502).
+        cmd += ['--reloadcmd',
+                "sh -c '(sleep 5 && systemctl restart amnezia-panel) >/dev/null 2>&1 &'"]
     install = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
     logs.append(((install.stdout or '') + (install.stderr or ''))[-2000:])
     if install.returncode != 0 or not (os.path.exists(key_file) and os.path.exists(cert_file)):
@@ -6249,11 +6253,8 @@ def api_duckdns_apply(request: Request, payload: DuckDNSApplyRequest):
             'key_text': '',
         })
         if os.environ.get('INVOCATION_ID'):
-            # Switch to HTTPS right away: restart ourselves after the
-            # response had time to reach the browser.
-            threading.Timer(2.0, lambda: subprocess.run(
-                ['systemctl', 'restart', 'amnezia-panel'],
-                capture_output=True)).start()
+            # install-cert's detached reloadcmd restarts the panel in ~5s,
+            # switching it to HTTPS on its own
             result['restarting'] = True
         else:
             result['restart_required'] = True
