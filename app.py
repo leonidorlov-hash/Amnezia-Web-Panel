@@ -127,6 +127,27 @@ async def custom_redoc():
     )
 app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SECRET_KEY', secrets.token_hex(32)))
 
+
+@app.middleware("http")
+async def noindex_middleware(request, call_next):
+    """Keep every panel page out of search indexes.
+
+    The panel is an admin tool, often exposed on a public domain (e.g. a
+    DuckDNS name). Without this header a reachable instance can end up in
+    search results, advertising its login page to scanners. noindex/nofollow
+    via X-Robots-Tag covers HTML pages, API responses and error pages alike.
+    """
+    response = await call_next(request)
+    response.headers['X-Robots-Tag'] = 'noindex, nofollow'
+    return response
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    """Politely ask crawlers to stay away (X-Robots-Tag above is the real lock;
+    robots.txt is only a hint and gets ignored by some bots)."""
+    return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
 # Mount static files & templates
 class CachedStaticFiles(StaticFiles):
     """Static assets that carry ?v=<static mtime> (see static_version()) change
@@ -2088,6 +2109,11 @@ def tpl(request, template, **kwargs):
         'lang': lang,
         '_': lambda text_id: _t(text_id, lang),
         'translations_json': json.dumps(TRANSLATIONS.get(lang, TRANSLATIONS.get('en', {}))),
+        # The login page is the only public page; it must not dump the whole
+        # UI dictionary (a feature showcase of the panel) into view-source.
+        'login_translations_json': json.dumps({
+            k: _t(k, lang) for k in ('login', 'logging_in', 'login_error')
+        }),
         'all_translations_json': json.dumps(TRANSLATIONS)
     }
     ctx.update(kwargs)
