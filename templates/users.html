@@ -13,6 +13,7 @@
 
         <div class="page-header__search search-field toolbar-search">
             <input type="text" class="form-input" id="userSearch" placeholder="{{ _('search_placeholder') }}"
+                autocomplete="off" readonly onfocus="this.removeAttribute('readonly')"
                 oninput="handleSearch(this.value)">
             <span class="search-field-icon">🔍</span>
         </div>

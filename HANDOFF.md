@@ -70,3 +70,8 @@
 - Ручная SSL-карточка остаётся как есть (владелец отказался от спойлера): duckdns-карточка и ручная редактируют одну конфигурацию settings['ssl'].
 - PR #202 в апстрим: feat/duckdns-card от upstream/main (828f060, 2 коммита чисто черри-пикнулись), 480 тестов OK на ветке, HANDOFF в ветку не утёк. В описании пометка «tested live only on my own single panel — needs testing/feedback», деталь про reloadcmd-гонку, out-of-scope (IP-блок, другие DNS-провайдеры).
 - Открытые наши PR в апстрим: только #202.
+
+## 03.10 22:30 — Фикс: менеджер паролей автозаполнял поиск пользователей логином
+- Симптом: после перевода панели на https-домен (DuckDNS) Chrome подставлял сохранённый логин в фильтр #userSearch на /users. Причина: эвристика автозаполнения — id поля содержит «user», на странице есть type="password» (форма addUserForm) → Chrome считает поле логином.
+- Фикс: users.html input#userSearch → autocomplete="off" + readonly, снятие readonly в onfocus (стандартный обход автозаполнения; readonly-поля менеджеры паролей не трогают, а перед вводом readonly снимается). Тесты 484/484 OK.
+- Раскатка: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel + Ctrl+Shift+R (менялся users.html).
