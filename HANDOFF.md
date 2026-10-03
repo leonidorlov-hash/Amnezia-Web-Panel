@@ -83,3 +83,6 @@
 - Контекст: панель торчит в интернет через https-домен DuckDNS. Страница входа светила в view-source весь словарь I18N (706 строк) — витрину всех фич панели (SSH-управление, API-токены, wg-easy/Remnawave/ngrok...). Запрета индексации не было вообще.
 - Сделано: (1) middleware в app.py — заголовок X-Robots-Tag: noindex, nofollow на ВСЕ ответы; (2) роут /robots.txt → Disallow: /; (3) <meta name="robots" content="noindex, nofollow"> в base.html и login.html; (4) login.html больше не получает полный translations_json — render() отдаёт login_translations_json (3 ключа: login/logging_in/login_error), вся остальная разметка входа без изменений; (5) регрессионный тест tests/test_noindex_robots.py. 489/489 OK.
 - Раскатка SERVERA обычная + Ctrl+Shift+R. Следом — срочный PR в апстрим.
+
+## 04.10 00:55 — Срочный PR #205: noindex + невинная страница входа
+- https://github.com/PRVTPRO/Amnezia-Web-Panel/pull/205 (ветка fix/noindex-public-login от upstream/main, тесты 474/474). Содержит: X-Robots-Tag middleware, robots.txt Disallow:/, meta robots в base+login, login_translations_json вместо полного словаря, тест test_noindex_robots.
