@@ -52,3 +52,10 @@
 
 ## 03.10 13:25 — deploy/v160 УДАЛЕНА (владелец: «вычисти, удали, забудь»)
 - Причина: панель на OVH снесена (больше не нужна), прод везде на v170, уникального актуального кода в v160 не было. Удалена локально и на форке. Не воскрешать; история — в HANDOFF-ARCHIVE.md.
+
+## 03.10 13:55 — DuckDNS-карточка в настройках (fa59e99, deploy/v170)
+- Задача владельца: карточка «Свой домен на duckdns.org» рядом с SSL: инструкция 3 шага, домен+токен, флажок SSL = бесплатный автопродлеваемый сертификат в 1 клик. Решения: только для себя (без PR в апстрим), DNS-01 через acme.sh (порт 80 не нужен), авто-обновление IP в duckdns каждые 600с (монитор-фон), «отключение доступа по IP» НЕ делаем, настройки в data.json, карточка пишет в ТУ ЖЕ settings['ssl'], что и ручная SSL-карточка.
+- Эндпоинт POST /api/settings/duckdns/apply: нормализация домена, update IP (пустой ip= → duckdns берёт IP вызывающего = сервер панели), выпуск cert через acme.sh --dns dns_duckdns, install в /etc/amnezia/duckdns.{cert,key}.pem, --reloadcmd systemctl restart amnezia-panel (автопродление само перезапускает панель). Первый apply под systemd сам рестартует панель через 2с-таймер; иначе restart_required в ответе.
+- Токен НЕ рендерится в страницу; пустое поле = оставить сохранённый. Ошибки: duckdns_domain_token_required / ip_update_failed / cert_failed (502, ssl не трогается).
+- 5 локалей, tests/test_duckdns.py (11 тестов), полный прогон 484 OK.
+- Деплой SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel. После: Настройки → «Свой домен на duckdns.org». Для HTTPS панель УЙДЁТ в рестарт сама — открывать https://домен:5000.
