@@ -59,3 +59,8 @@
 - Токен НЕ рендерится в страницу; пустое поле = оставить сохранённый. Ошибки: duckdns_domain_token_required / ip_update_failed / cert_failed (502, ssl не трогается).
 - 5 локалей, tests/test_duckdns.py (11 тестов), полный прогон 484 OK.
 - Деплой SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel. После: Настройки → «Свой домен на duckdns.org». Для HTTPS панель УЙДЁТ в рестарт сама — открывать https://домен:5000.
+
+## 03.10 14:30 — DuckDNS: боевой дебют поймал гонку reloadcmd (6b3d2c0)
+- Первый боевой apply (домен cnacu6o.duckdns.org): cert ВЫПУСТИЛСЯ, файлы в /etc/amnezia записались, но UI показал 502 duckdns_cert_failed. Корень: '--reloadcmd systemctl restart amnezia-panel' исполнялся синхронно внутри install-cert → systemd убивал панель посреди собственного запроса → дочерний install-cert умирал → rc≠0 → 502 (uvicorn graceful shutdown успевал отдать ответ). settings['ssl'] при этом НЕ записался.
+- Фикс: reloadcmd = "sh -c '(sleep 5 && systemctl restart amnezia-panel) >/dev/null 2>&1 &'" — отложенно и отцеплено; install-cert всегда возвращает 0, рестарт случается после ответа. Тот же reloadcmd обслуживает кроновские продления. Дублирующий Timer-рестарт из эндпоинта убран. 484 теста OK.
+- Поведение повторного apply идемпотентно: acme.sh скажет Skip (cert жив), install-cert экспортирует, ssl-настройки запишутся, панель сама уйдёт на https://домен:5000.
