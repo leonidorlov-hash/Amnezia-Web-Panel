@@ -449,3 +449,10 @@
 - Поколение протокола: родные репо (amnezia-vpn) сейчас на линейке AWG 3.1 (amneziawg-go, kernel-module, tools — все v3.1.x). Поколения новее 3.1 НЕТ. Панель уже поддерживает AWG 3.1 (инстансы awg3) — по поколению актуальны.
 - РАСХОЖДЕНИЕ: панель пинит kernel module 3.1.20260812 (managers/awg_manager.py:907), апстрим уже v3.1.20260906 (06.09) + промежуточные 20260827/28. amneziawg-go у панели — образ amneziavpn/amneziawg-go:latest (плавающий тег, свежий на момент установки инстанса; апстрим v3.1.20260828).
 - Кандидат: поднять AWG_MODULE_VERSION до 3.1.20260906 (однострочная правка + прогнать тесты).
+
+## 03.10 12:20 — Апстрим v1.7.3 слит в deploy/v170 (merge 33e87c4)
+- СОСТАВ 1.7.2/1.7.3: практически все наши наработки, принятые автором — #198 (purge connections при uninstall), #200 (stale connections + mid-flight switch), #201 (CSS-пак + подсветка активного инстанса), ad72fc0 (distrust пустой prefetched clientsTable — слой «External»). Собственных изменений апстрима: только бампы версии и e4bb925 «Remove old files».
+- ВАЖНО: e4bb925 удалил из АПСТРИМА HANDOFF.md, CHAT-RULES.md, SECURITY_REMEDIATION_RU.md (наши рабочие файлы попадали туда через PR). HANDOFF теперь живёт ТОЛЬКО в нашем форке — при будущих PR следить, чтобы не утечал обратно.
+- В апстрим НЕ ушло (остаются только у нас в deploy/v170): toggle hardening (08b936a/1595db9/37a7ea1), toggle race retry + peerToggling guard (0938658), glued batch markers (26129da), сторож poisoned batch (4d0db9f). Кандидаты на будущие PR.
+- Мерж: конфликт был один (HANDOFF modify/delete — оставлен наш). app.py → v1.7.3. Тесты 473/473 OK.
+- РАСКАТКА на SERVERA обычная: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel.
