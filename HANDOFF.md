@@ -64,3 +64,9 @@
 - Первый боевой apply (домен cnacu6o.duckdns.org): cert ВЫПУСТИЛСЯ, файлы в /etc/amnezia записались, но UI показал 502 duckdns_cert_failed. Корень: '--reloadcmd systemctl restart amnezia-panel' исполнялся синхронно внутри install-cert → systemd убивал панель посреди собственного запроса → дочерний install-cert умирал → rc≠0 → 502 (uvicorn graceful shutdown успевал отдать ответ). settings['ssl'] при этом НЕ записался.
 - Фикс: reloadcmd = "sh -c '(sleep 5 && systemctl restart amnezia-panel) >/dev/null 2>&1 &'" — отложенно и отцеплено; install-cert всегда возвращает 0, рестарт случается после ответа. Тот же reloadcmd обслуживает кроновские продления. Дублирующий Timer-рестарт из эндпоинта убран. 484 теста OK.
 - Поведение повторного apply идемпотентно: acme.sh скажет Skip (cert жив), install-cert экспортирует, ssl-настройки запишутся, панель сама уйдёт на https://домен:5000.
+
+## 03.10 15:10 — DuckDNS: БОЕВАЯ ПРОВЕРКА ПРОЙДЕНА + PR #202 в апстрим
+- После фикса 6b3d2c0 повторный apply отработал чисто: Skip → install-cert → ssl-настройки записались → панель сама ушла на HTTPS. Владелец подтвердил: https://<домен>.duckdns.org:5000 открывается с валидным замком. ERR_EMPTY_RESPONSE по http://IP:5000 — ожидаемо (панель теперь TLS-only).
+- Ручная SSL-карточка остаётся как есть (владелец отказался от спойлера): duckdns-карточка и ручная редактируют одну конфигурацию settings['ssl'].
+- PR #202 в апстрим: feat/duckdns-card от upstream/main (828f060, 2 коммита чисто черри-пикнулись), 480 тестов OK на ветке, HANDOFF в ветку не утёк. В описании пометка «tested live only on my own single panel — needs testing/feedback», деталь про reloadcmd-гонку, out-of-scope (IP-блок, другие DNS-провайдеры).
+- Открытые наши PR в апстрим: только #202.
