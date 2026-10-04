@@ -178,6 +178,7 @@
             <div>
                 <b>🛡 {{ _('rkn_block_title') }}</b>
                 <div class="text-muted text-sm" id="rknBlockState"></div>
+                <div class="text-muted text-sm" id="rknBlockLegend" style="display:none;"></div>
             </div>
             <div class="flex items-center gap-sm">
                 <button class="btn btn-secondary btn-sm btn-icon" onclick="clearRknScans()"
@@ -4193,14 +4194,20 @@
                 st.textContent = _('rkn_block_not_installed');
                 statsEl.style.display = 'none';
                 clearBtn.style.display = 'none';
+                document.getElementById('rknBlockLegend').style.display = 'none';
                 return;
             }
             clearBtn.style.display = '';
+            const legendEl = document.getElementById('rknBlockLegend');
+            legendEl.textContent = _('rkn_block_legend');
+            legendEl.style.display = '';
             const sets = d.sets || {};
             const setsEmpty = [sets.in4, sets.in6, sets.out4, sets.out6].every(v => !v);
+            const inN = (sets.in4 || 0) + (sets.in6 || 0);
+            const outN = (sets.out4 || 0) + (sets.out6 || 0);
             st.textContent = _('rkn_block_agent') + ': ' + d.agent_state + ' • ' +
-                _('rkn_block_sets') + ': ' +
-                [sets.in4, sets.in6, sets.out4, sets.out6].map(v => v || 0).join('/') +
+                _('rkn_block_lists') + ': ' + _('rkn_block_in_short') + ' ' + inN + ', ' +
+                _('rkn_block_out_short') + ' ' + outN +
                 (setsEmpty ? ' ⚠️ ' + _('rkn_block_sets_empty') : '') + ' • ' +
                 _('rkn_block_events24') + ': ' + d.last_24h;
             if (!d.total_events) {

@@ -721,5 +721,9 @@
   "rkn_block_sets_empty": "مجموعه‌ها خالی‌اند — update اجرا نشده",
   "rkn_block_clear": "پاک‌کردن آمار اسکن",
   "rkn_block_clear_confirm": "رویدادهای اسکن روی سرور پاک شود؟",
-  "rkn_block_cleared": "آمار اسکن پاک شد"
+  "rkn_block_cleared": "آمار اسکن پاک شد",
+  "rkn_block_lists": "لیست‌های مسدودی",
+  "rkn_block_in_short": "ورودی:",
+  "rkn_block_out_short": "خروجی:",
+  "rkn_block_legend": "ورودی: زیرشبکه‌های RKN/دولتی — اتصالات ورودی مسدود. خروجی: شبکه‌های VK/Max/OK — ترافیک خروجی به سمت آن‌ها مسدود."
 }

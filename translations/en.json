@@ -721,5 +721,9 @@
   "rkn_block_sets_empty": "sets are empty — update failed",
   "rkn_block_clear": "Clear scan statistics",
   "rkn_block_clear_confirm": "Clear the scan log on the server? The red button disappears until the next scans.",
-  "rkn_block_cleared": "Scan statistics cleared"
+  "rkn_block_cleared": "Scan statistics cleared",
+  "rkn_block_lists": "blocklists",
+  "rkn_block_in_short": "in:",
+  "rkn_block_out_short": "out:",
+  "rkn_block_legend": "in: RKN/gov subnets — incoming connections blocked. out: VK/Max/OK networks — outbound traffic to them blocked."
 }

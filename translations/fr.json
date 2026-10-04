@@ -721,5 +721,9 @@
   "rkn_block_sets_empty": "ensembles vides — échec du update",
   "rkn_block_clear": "Effacer les statistiques de scan",
   "rkn_block_clear_confirm": "Effacer le journal des scans sur le serveur ?",
-  "rkn_block_cleared": "Statistiques effacées"
+  "rkn_block_cleared": "Statistiques effacées",
+  "rkn_block_lists": "listes de blocage",
+  "rkn_block_in_short": "entr. :",
+  "rkn_block_out_short": "sort. :",
+  "rkn_block_legend": "entr. : sous-réseaux RKN/état — connexions entrantes bloquées. sort. : réseaux VK/Max/OK — trafic sortant vers eux bloqué."
 }
