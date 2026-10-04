@@ -4179,11 +4179,19 @@
                 statsEl.style.display = 'none';
                 return;
             }
+            const sets = d.sets || {};
+            const setsEmpty = [sets.in4, sets.in6, sets.out4, sets.out6].every(v => !v);
             st.textContent = _('rkn_block_agent') + ': ' + d.agent_state + ' • ' +
+                _('rkn_block_sets') + ': ' +
+                [sets.in4, sets.in6, sets.out4, sets.out6].map(v => v || 0).join('/') +
+                (setsEmpty ? ' ⚠️ ' + _('rkn_block_sets_empty') : '') + ' • ' +
                 _('rkn_block_events24') + ': ' + d.last_24h;
             if (!d.total_events) {
                 statsEl.innerHTML = '<span class="text-muted">' + _('rkn_block_none') + '</span>';
                 statsEl.style.display = '';
+                if (location.hash === '#rknBlockCard') {
+                    setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+                }
                 return;
             }
             const orgRows = (d.by_org || []).map(([org, n]) =>

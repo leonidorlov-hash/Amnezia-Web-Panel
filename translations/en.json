@@ -716,5 +716,7 @@
   "rkn_block_dirs": "Directions",
   "rkn_block_total": "Total events",
   "rkn_scan_alert": "SCANNING DETECTED!",
-  "rkn_block_recent": "Recent events"
+  "rkn_block_recent": "Recent events",
+  "rkn_block_sets": "sets",
+  "rkn_block_sets_empty": "sets are empty — update failed"
 }

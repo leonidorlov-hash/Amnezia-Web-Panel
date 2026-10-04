@@ -3485,11 +3485,17 @@ def _parse_rkn_scan_output(out, flag_enabled):
     """Parse `rkn-extra-block status` + rkn-scans.json tail into a summary dict."""
     agent_state = 'unknown'
     log_part = ''
+    status_part = ''
     if '===LOG===' in (out or ''):
         status_part, log_part = out.split('===LOG===', 1)
         first_line = status_part.strip().splitlines()[0] if status_part.strip() else ''
         if ':' in first_line:
             agent_state = first_line.split(':', 1)[1].strip()
+    # Наполненность наборов из cmd_status: "входящие...: v4=N сетей v6=M сетей"
+    sets = {'in4': 0, 'in6': 0, 'out4': 0, 'out6': 0}
+    counts = re.findall(r'v[46]=(\d+)', status_part)
+    if len(counts) >= 4:
+        sets = dict(zip(('in4', 'in6', 'out4', 'out6'), (int(c) for c in counts[:4])))
     events = []
     for line in (log_part or '').splitlines():
         line = line.strip()
@@ -3526,6 +3532,7 @@ def _parse_rkn_scan_output(out, flag_enabled):
     return {
         'flag_enabled': bool(flag_enabled),
         'agent_state': agent_state,
+        'sets': sets,
         'total_events': len(events),
         'last_24h': last_24h,
         'last_event': last_ts.isoformat() if last_ts else None,
@@ -3590,7 +3597,8 @@ async def api_rkn_scan_flags(request: Request):
             summary = {'agent_state': parsed['agent_state'],
                        'events24': parsed['last_24h'],
                        'last': parsed['last_event'],
-                       'flag': parsed['flag_enabled']}
+                       'flag': parsed['flag_enabled'],
+                       'sets': parsed['sets']}
         except Exception:
             summary = None
         RKN_FLAG_CACHE[idx] = {'ts': now, 'data': summary}

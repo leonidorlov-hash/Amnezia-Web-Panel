@@ -716,5 +716,7 @@
   "rkn_block_dirs": "Направления",
   "rkn_block_total": "Всего событий",
   "rkn_scan_alert": "БЫЛИ СКАНИРОВАНИЯ!",
-  "rkn_block_recent": "Последние события"
+  "rkn_block_recent": "Последние события",
+  "rkn_block_sets": "наборы",
+  "rkn_block_sets_empty": "наборы пустые — update не отработал"
 }

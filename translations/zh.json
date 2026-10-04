@@ -716,5 +716,7 @@
   "rkn_block_dirs": "方向",
   "rkn_block_total": "事件总数",
   "rkn_scan_alert": "检测到扫描！",
-  "rkn_block_recent": "最近事件"
+  "rkn_block_recent": "最近事件",
+  "rkn_block_sets": "集合",
+  "rkn_block_sets_empty": "集合为空 — update 未运行"
 }

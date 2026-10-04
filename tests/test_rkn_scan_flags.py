@@ -24,7 +24,7 @@ def isolated_panel():
         'Request': object, 'JSONResponse': JSONResponse, 'logger': Mock(), 'get_ssh': Mock(),
         'load_data': Mock(), 'save_data': Mock(), '_check_admin': Mock(return_value=True),
         'RKN_FLAG_CACHE': {}, 'RKN_FLAG_CACHE_TTL': 900, 'RKN_SCAN_SSH_CMD': 'cmd',
-        'asyncio': __import__('asyncio'), 'time': __import__('time'), 'json': json,
+        'asyncio': __import__('asyncio'), 'time': __import__('time'), 'json': json, 're': __import__('re'),
         'datetime': dt.datetime, 'timedelta': dt.timedelta, 'timezone': dt.timezone,
     }
 
@@ -36,7 +36,9 @@ def isolated_panel():
     return namespace
 
 
-STATUS_ON = 'rkn_extra_block: on\n  входящие (РКН, DROP NEW):  v4=1151 сетей  v6=21 сетей'
+STATUS_ON = ('rkn_extra_block: on\n'
+             '  входящие (РКН, DROP NEW):  v4=1151 сетей  v6=21 сетей\n'
+             '  исходящие (VK/Max, REJECT): v4=204 сетей  v6=3 сетей')
 EV_TPL = '{"t": "%s", "dir": "in", "ip": "87.240.135.44", "dpt": 22, "org": "VKONTAKTE-SPB-AS (LLC VK)"}'
 
 
@@ -68,7 +70,13 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(d['by_org'][0][0], 'VKONTAKTE-SPB-AS (LLC VK)')
         self.assertEqual(d['by_dpt'][0][0], 22)
         self.assertEqual(d['by_dir'], {'in': 3})
+        self.assertEqual(d['sets'], {'in4': 1151, 'in6': 21, 'out4': 204, 'out6': 3})
         self.assertEqual(len(d['recent']), 3)
+
+    def test_sets_default_to_zero_without_counters(self):
+        out = 'rkn_extra_block: on\n===LOG===\n'
+        d = self.parse(out, False)
+        self.assertEqual(d['sets'], {'in4': 0, 'in6': 0, 'out4': 0, 'out6': 0})
 
     def test_garbage_lines_are_skipped(self):
         out = STATUS_ON + '\n===LOG===\nnot json\n{"broken"\n' + EV_TPL % '2026-10-04T10:00:00+00:00'

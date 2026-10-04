@@ -716,5 +716,7 @@
   "rkn_block_dirs": "جهت‌ها",
   "rkn_block_total": "مجموع رویدادها",
   "rkn_scan_alert": "ردیابی اسکن!",
-  "rkn_block_recent": "رویدادهای اخیر"
+  "rkn_block_recent": "رویدادهای اخیر",
+  "rkn_block_sets": "مجموعه‌ها",
+  "rkn_block_sets_empty": "مجموعه‌ها خالی‌اند — update اجرا نشده"
 }
