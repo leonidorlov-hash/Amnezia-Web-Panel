@@ -3438,8 +3438,8 @@ def api_server_stats(request: Request, server_id: int):
 
 
 RKN_INSTALL_CMD = (
-    'bash -c "$(curl -fsSL '
-    'https://raw.githubusercontent.com/leonidorlov-hash/amnezia-blocker/main/install-rkn-extra.sh)"'
+    'curl -fsSL https://raw.githubusercontent.com/leonidorlov-hash/amnezia-blocker/main/install-rkn-extra.sh '
+    '-o /tmp/rkn-install.sh && bash /tmp/rkn-install.sh'
 )
 
 
