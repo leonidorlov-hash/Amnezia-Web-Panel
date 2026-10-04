@@ -116,3 +116,8 @@
 - index.html: контейнер #rkn-alert-N в плитке, JS loadRknScanFlags() на DOMContentLoaded — красная кнопка ⚠ БЫЛИ СКАНИРОВАНИЯ! (N за 24ч) → /server/N#rknBlockCard.
 - server.html: таблица «Последние события» (время/IP/организация/порт) из d.recent + расшифровка портов в имена служб (RKN_SVC_NAMES: 22 SSH, 5000 Panel, 51820 WireGuard и т.д.); по #rknBlockCard — автоскролл к карточке.
 - Переводы: rkn_scan_alert, rkn_block_recent — все 5 локалей. Тесты tests/test_rkn_scan_flags.py (6 шт, AST-изоляция как в test_auth_security). Полный прогон 495/495 OK. Без PR (сырой прототип, владелец тестирует).
+
+## 04.10 21:20 — MRAK: охота на «дворника» ipset-наборов + чистка мусора владельца
+- Симптом: rkn-extra-block контур ON, но наборы пустые; update писал "Sets cannot be swapped: the second set does not exist" (лог при этом SWAP-OK по всем — лог врёт не может, значит наборы создавались, но потом исчезали).
+- Выяснено: на MRAK жили чужие контура — rus-routes.timer (каждые 2 мин крутил /usr/local/bin/rus-routes-update.sh), auto-rus-catch.service, ipset.service (restore /etc/ipset.conf при загрузке), cron /etc/cron.d/amnezia-blocker → update-blocks.sh (прокладка blocker.sh update, чистит только свои). Владелец подтвердил: rus-routes-update.sh и auto-rus-catch.py ЕМУ НЕ НУЖНЫ — disable --now + удалены.
+- Пока НЕ доказано, кто именно уничтожал rkn_extra_* (в rus-routes-update.sh destroy чужих нет; blocker.sh — только свои). Гипотезы: kernel без поддержки ip_set v6 (in6/out6), либо внешний restore. Следующий шаг: ручное создание 3 недостающих наборов с видимым rc + повторный update + наблюдение.
