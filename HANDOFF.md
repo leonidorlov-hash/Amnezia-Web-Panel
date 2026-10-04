@@ -92,3 +92,9 @@
 
 ## 04.10 13:30 — rkn-extra-block v1.1: log on/off + scan (f74714c)
 - log on/off — rate-limited (10/мин) LOG-правила перед DROP/REJECT, просмотр: journalctl -k -g RKN_EXTRA. scan — ретроспектива: матч IP логов против ipset-наборов. ОБСУЖДАЕТСЯ перенос блокировки+статистики сканов в панель (флажок на сервер + агент почасового сбора).
+
+## 04.10 14:30 — RKN/VK-блок в панели: флажок на сервер + статистика сканов (сырой прототип, БЕЗ PR)
+- Решение владельца: «да, пока всё сыро, без PR, протестирую сам вначале». Никаких PR в апстрим и раскаток на SERVERA от меня.
+- Серверная половина (blocker-repo, cf2a5e7, отдельный приватный репо leonidorlov-hash/amnezia-blocker): update строит nets.map (метки ORG из blacklist_with_comments.txt); rkn-agent-collect (timer rkn-agent.timer, hourly) собирает журнал -k за 65 мин, парсит SRC=/DPT=, пишет /var/log/rkn-scans.json (tail -5000). Инсталлер ставит агент и включает log on.
+- Панель (deploy/v170): POST /api/servers/{id}/rkn_block — enabled=true запускает install-rkn-extra.sh по SSH (таймаут 420с, тянет списки C24Be + apt-пакеты, включает log+agent), enabled=false делает только rkn-extra-block off. GET /api/servers/{id}/rkn_scans — статус контура + tail -2000 rkn-scans.json, агрегация by_org/by_dpt/by_dir/last_24h/recent. UI: карточка 🛡 на странице сервера, флажок + сводка сканов. Состояние — server['rkn_block_enabled'] в data.json (дефолт False). Переводы rkn_block_* во всех 5 локалях. blocker-repo/ в .gitignore (это отдельный репозиторий, не коммитить).
+- Тесты: 489/489 OK. Вживую эндпоинты не гонялся (нет SSH к серверам) — владелец тестирует сам. Раскатка владельцу по стандартной команде fetch fork + reset --hard fork/deploy/v170.

@@ -171,6 +171,21 @@
             </button>
         </div>
     </div>
+
+    <!-- ===== RKN extra block (C24Be lists) — raw prototype ===== -->
+    <div class="card mt-md" id="rknBlockCard" style="display:none;">
+        <div class="flex items-center justify-between gap-md flex-wrap">
+            <div>
+                <b>🛡 {{ _('rkn_block_title') }}</b>
+                <div class="text-muted text-sm" id="rknBlockState"></div>
+            </div>
+            <label class="flex items-center gap-sm" style="cursor:pointer;">
+                <input type="checkbox" id="rknBlockToggle" onchange="toggleRknBlock(this.checked)">
+                <span class="text-sm">{{ _('rkn_block_enable') }}</span>
+            </label>
+        </div>
+        <div id="rknBlockStats" class="mt-md text-sm" style="display:none;"></div>
+    </div>
     <div id="serverStatus" class="mt-md hidden">
         <div class="divider"></div>
         <div class="server-status-row">
@@ -4138,9 +4153,64 @@
         }
     }
 
+    // ========== RKN extra block (C24Be lists) — raw prototype ==========
+    async function loadRknBlock() {
+        const card = document.getElementById('rknBlockCard');
+        try {
+            const d = await apiCall(`/api/servers/${SERVER_ID}/rkn_scans`, 'GET');
+            card.style.display = '';
+            document.getElementById('rknBlockToggle').checked = !!d.flag_enabled;
+            const st = document.getElementById('rknBlockState');
+            const statsEl = document.getElementById('rknBlockStats');
+            if (d.agent_state === 'unknown') {
+                st.textContent = _('rkn_block_not_installed');
+                statsEl.style.display = 'none';
+                return;
+            }
+            st.textContent = _('rkn_block_agent') + ': ' + d.agent_state + ' • ' +
+                _('rkn_block_events24') + ': ' + d.last_24h;
+            if (!d.total_events) {
+                statsEl.innerHTML = '<span class="text-muted">' + _('rkn_block_none') + '</span>';
+                statsEl.style.display = '';
+                return;
+            }
+            const orgRows = (d.by_org || []).map(([org, n]) =>
+                `<tr><td style="padding:2px 12px 2px 0;">${esc(org)}</td><td>${n}</td></tr>`).join('');
+            const dptRows = (d.by_dpt || []).map(([p, n]) =>
+                `<tr><td style="padding:2px 12px 2px 0;">${p}</td><td>${n}</td></tr>`).join('');
+            const dir = d.by_dir || {};
+            statsEl.innerHTML = `
+                <div class="flex gap-md flex-wrap">
+                    <div><div class="text-muted">${_('rkn_block_who')}</div><table>${orgRows}</table></div>
+                    <div><div class="text-muted">${_('rkn_block_ports')}</div><table>${dptRows}</table></div>
+                </div>
+                <div class="text-muted mt-sm">${_('rkn_block_dirs')}: in ${dir.in || 0} / out ${dir.out || 0}
+                    • ${_('rkn_block_total')}: ${d.total_events}
+                    ${d.last_event ? ' • ' + d.last_event : ''}</div>`;
+            statsEl.style.display = '';
+        } catch (err) {
+            console.warn('RKN block load failed:', err);
+        }
+    }
+
+    async function toggleRknBlock(checked) {
+        const toggle = document.getElementById('rknBlockToggle');
+        toggle.disabled = true;
+        try {
+            await apiCall(`/api/servers/${SERVER_ID}/rkn_block`, 'POST', { enabled: checked });
+            await loadRknBlock();
+        } catch (err) {
+            showToast(_('error') + ': ' + (err.message || err), 'error');
+            toggle.checked = !checked;
+        } finally {
+            toggle.disabled = false;
+        }
+    }
+
     // ========== Init ==========
     applyInstalledAppsVisibility();
     checkServer();
     loadServerStats();
+    loadRknBlock();
 </script>
 {% endblock %}

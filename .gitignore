@@ -37,3 +37,6 @@ data.json
 .idea/
 .worktrees/
 docs/
+
+# Local clone of separate private repo (leonidorlov-hash/amnezia-blocker)
+blocker-repo/

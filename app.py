@@ -22,7 +22,7 @@ import zipfile
 import signal
 import struct
 import zlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import io
 from fastapi.responses import (JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse,
                                FileResponse, PlainTextResponse)
@@ -2176,6 +2176,10 @@ class EditServerRequest(BaseModel):
     self_service_enabled: Optional[bool] = None
 
 
+class RknBlockRequest(BaseModel):
+    enabled: bool = False
+
+
 class ReorderServersRequest(BaseModel):
     # `order[i]` is the *old* server index now at position `i` in the new layout.
     order: List[int]
@@ -3431,6 +3435,122 @@ def api_server_stats(request: Request, server_id: int):
     except Exception as e:
         logger.exception("Error getting server stats")
         return JSONResponse({'error': str(e)}, status_code=500)
+
+
+RKN_INSTALL_CMD = (
+    'bash -c "$(curl -fsSL '
+    'https://raw.githubusercontent.com/leonidorlov-hash/amnezia-blocker/main/install-rkn-extra.sh)"'
+)
+
+
+@app.post('/api/servers/{server_id}/rkn_block', tags=["Servers"])
+async def api_rkn_block(request: Request, server_id: int, req: RknBlockRequest):
+    """Toggle the C24Be-based RKN/VK network blocking on a managed server.
+
+    Enabling installs rkn-extra-block (ipset contours + hourly scan-stats
+    collector) from the amnezia-blocker repo over SSH; disabling removes the
+    iptables jumps (the install stays, re-enable is instant).
+    """
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    server = data['servers'][server_id]
+    ssh = await asyncio.to_thread(get_ssh, server)
+    await asyncio.to_thread(ssh.connect)
+    try:
+        if req.enabled:
+            _out, err, code = await asyncio.to_thread(ssh.run_sudo_command, RKN_INSTALL_CMD, 420)
+            if code != 0:
+                return JSONResponse({'error': f'install failed: {(err or "").strip()[-500:]}'},
+                                    status_code=500)
+        else:
+            await asyncio.to_thread(ssh.run_sudo_command, 'rkn-extra-block off 2>/dev/null || true')
+    finally:
+        try:
+            ssh.disconnect()
+        except Exception:
+            pass
+    server['rkn_block_enabled'] = bool(req.enabled)
+    save_data(data)
+    return {'status': 'success', 'enabled': req.enabled}
+
+
+@app.get('/api/servers/{server_id}/rkn_scans', tags=["Servers"])
+async def api_rkn_scans(request: Request, server_id: int):
+    """Compact scan statistics collected hourly by rkn-agent on the server."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    server = data['servers'][server_id]
+    ssh = await asyncio.to_thread(get_ssh, server)
+    await asyncio.to_thread(ssh.connect)
+    try:
+        out, _, _ = await asyncio.to_thread(
+            ssh.run_sudo_command,
+            "rkn-extra-block status 2>/dev/null | head -1; "
+            "echo '===LOG==='; tail -n 2000 /var/log/rkn-scans.json 2>/dev/null",
+            60)
+    finally:
+        try:
+            ssh.disconnect()
+        except Exception:
+            pass
+
+    agent_state = 'unknown'
+    log_part = ''
+    if '===LOG===' in (out or ''):
+        status_part, log_part = out.split('===LOG===', 1)
+        first_line = status_part.strip().splitlines()[0] if status_part.strip() else ''
+        if ':' in first_line:
+            agent_state = first_line.split(':', 1)[1].strip()
+    events = []
+    for line in (log_part or '').splitlines():
+        line = line.strip()
+        if not line.startswith('{'):
+            continue
+        try:
+            ev = json.loads(line)
+            if isinstance(ev, dict) and 't' in ev:
+                events.append(ev)
+        except ValueError:
+            continue
+
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(hours=24)
+    by_org, by_dpt, by_dir = {}, {}, {}
+    last_24h = 0
+    last_ts = None
+    for ev in events:
+        org = str(ev.get('org') or '?')
+        by_org[org] = by_org.get(org, 0) + 1
+        dpt = ev.get('dpt', 0)
+        by_dpt[dpt] = by_dpt.get(dpt, 0) + 1
+        direction = ev.get('dir', '?')
+        by_dir[direction] = by_dir.get(direction, 0) + 1
+        try:
+            ts = datetime.fromisoformat(str(ev['t']).replace('Z', '+00:00'))
+            if ts >= day_ago:
+                last_24h += 1
+            if last_ts is None or ts > last_ts:
+                last_ts = ts
+        except ValueError:
+            pass
+
+    return {
+        'flag_enabled': bool(server.get('rkn_block_enabled', False)),
+        'agent_state': agent_state,
+        'total_events': len(events),
+        'last_24h': last_24h,
+        'last_event': last_ts.isoformat() if last_ts else None,
+        'by_org': sorted(by_org.items(), key=lambda kv: -kv[1])[:10],
+        'by_dpt': sorted(by_dpt.items(), key=lambda kv: -kv[1])[:10],
+        'by_dir': by_dir,
+        'recent': events[-5:][::-1],
+    }
 
 
 @app.post('/api/servers/{server_id}/check', tags=["Servers"])
