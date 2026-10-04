@@ -3477,29 +3477,12 @@ async def api_rkn_block(request: Request, server_id: int, req: RknBlockRequest):
     return {'status': 'success', 'enabled': req.enabled}
 
 
-@app.get('/api/servers/{server_id}/rkn_scans', tags=["Servers"])
-async def api_rkn_scans(request: Request, server_id: int):
-    """Compact scan statistics collected hourly by rkn-agent on the server."""
-    if not _check_admin(request):
-        return JSONResponse({'error': 'Forbidden'}, status_code=403)
-    data = load_data()
-    if server_id >= len(data['servers']):
-        return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
-    ssh = await asyncio.to_thread(get_ssh, server)
-    await asyncio.to_thread(ssh.connect)
-    try:
-        out, _, _ = await asyncio.to_thread(
-            ssh.run_sudo_command,
-            "rkn-extra-block status 2>/dev/null | head -1; "
-            "echo '===LOG==='; tail -n 2000 /var/log/rkn-scans.json 2>/dev/null",
-            60)
-    finally:
-        try:
-            ssh.disconnect()
-        except Exception:
-            pass
+RKN_SCAN_SSH_CMD = ("rkn-extra-block status 2>/dev/null | head -1; "
+                      "echo '===LOG==='; tail -n 2000 /var/log/rkn-scans.json 2>/dev/null")
 
+
+def _parse_rkn_scan_output(out, flag_enabled):
+    """Parse `rkn-extra-block status` + rkn-scans.json tail into a summary dict."""
     agent_state = 'unknown'
     log_part = ''
     if '===LOG===' in (out or ''):
@@ -3541,7 +3524,7 @@ async def api_rkn_scans(request: Request, server_id: int):
             pass
 
     return {
-        'flag_enabled': bool(server.get('rkn_block_enabled', False)),
+        'flag_enabled': bool(flag_enabled),
         'agent_state': agent_state,
         'total_events': len(events),
         'last_24h': last_24h,
@@ -3551,6 +3534,71 @@ async def api_rkn_scans(request: Request, server_id: int):
         'by_dir': by_dir,
         'recent': events[-5:][::-1],
     }
+
+
+async def _fetch_rkn_scan_output(server):
+    """SSH to a server and fetch the rkn-extra-block status line + scan log tail."""
+    ssh = await asyncio.to_thread(get_ssh, server)
+    await asyncio.to_thread(ssh.connect)
+    try:
+        out, _, _ = await asyncio.to_thread(ssh.run_sudo_command, RKN_SCAN_SSH_CMD, 60)
+    finally:
+        try:
+            ssh.disconnect()
+        except Exception:
+            pass
+    return out
+
+
+@app.get('/api/servers/{server_id}/rkn_scans', tags=["Servers"])
+async def api_rkn_scans(request: Request, server_id: int):
+    """Compact scan statistics collected hourly by rkn-agent on the server."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    server = data['servers'][server_id]
+    out = await _fetch_rkn_scan_output(server)
+    return _parse_rkn_scan_output(out, server.get('rkn_block_enabled', False))
+
+
+RKN_FLAG_CACHE = {}
+RKN_FLAG_CACHE_TTL = 900  # seconds; scan flags on the overview page
+
+
+@app.get('/api/servers/rkn_scan_flags', tags=["Servers"])
+async def api_rkn_scan_flags(request: Request):
+    """Lightweight per-server scan flags for the servers overview page.
+
+    Returns {server_id: {agent_state, events24, last, flag}} for servers whose
+    rkn-agent responded. Results are cached for RKN_FLAG_CACHE_TTL seconds so
+    the overview page doesn't SSH into every server on each load.
+    """
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    now = time.time()
+
+    async def collect(idx, srv):
+        cached = RKN_FLAG_CACHE.get(idx)
+        if cached and now - cached['ts'] < RKN_FLAG_CACHE_TTL:
+            return idx, cached['data']
+        try:
+            out = await _fetch_rkn_scan_output(srv)
+            parsed = _parse_rkn_scan_output(out, srv.get('rkn_block_enabled', False))
+            summary = {'agent_state': parsed['agent_state'],
+                       'events24': parsed['last_24h'],
+                       'last': parsed['last_event'],
+                       'flag': parsed['flag_enabled']}
+        except Exception:
+            summary = None
+        RKN_FLAG_CACHE[idx] = {'ts': now, 'data': summary}
+        return idx, summary
+
+    results = await asyncio.gather(
+        *[collect(i, s) for i, s in enumerate(data['servers'])])
+    return {str(i): s for i, s in results if s}
 
 
 @app.post('/api/servers/{server_id}/check', tags=["Servers"])

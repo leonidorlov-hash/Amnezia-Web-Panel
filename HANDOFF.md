@@ -109,3 +109,10 @@
 - Вторая причина неработающей установки на MRAK: в install-rkn-extra.sh был `apt-get install … flock`, а flock — не пакет, а бинарник из util-linux → E: Unable to locate package flock, установка падала, fail-loud фикс показал это честным 500.
 - Фикс: ставим util-linux + проверка `command -v flock`. Запушено в amnezia-blocker main (622c3d7). Панель НЕ перекатывать — инсталлер тянется с репо в момент тогла.
 - Владельцу: на MRAK флажок OFF→ON ещё раз.
+
+## 04.10 18:00 — RKN-блок: красная кнопка «БЫЛИ СКАНИРОВАНИЯ!» на плитках + детали событий
+- Задача владельца: на странице списка серверов в плитке — красная кнопка при сканах за 24ч, клик → страница сервера, там «какая служба, кто, как часто».
+- app.py: парсинг вынесен в _parse_rkn_scan_output (чистая функция), SSH-фетч в _fetch_rkn_scan_output (общий). Новый GET /api/servers/rkn_scan_flags — сводка {agent_state, events24, last, flag} по всем серверам, кэш в памяти 15 мин (RKN_FLAG_CACHE, ленивое обновление через asyncio.gather; недоступные серверы тоже кэшируются как None, чтобы не долбить). Конфликта с {server_id} нет — такого голого роута нет.
+- index.html: контейнер #rkn-alert-N в плитке, JS loadRknScanFlags() на DOMContentLoaded — красная кнопка ⚠ БЫЛИ СКАНИРОВАНИЯ! (N за 24ч) → /server/N#rknBlockCard.
+- server.html: таблица «Последние события» (время/IP/организация/порт) из d.recent + расшифровка портов в имена служб (RKN_SVC_NAMES: 22 SSH, 5000 Panel, 51820 WireGuard и т.д.); по #rknBlockCard — автоскролл к карточке.
+- Переводы: rkn_scan_alert, rkn_block_recent — все 5 локалей. Тесты tests/test_rkn_scan_flags.py (6 шт, AST-изоляция как в test_auth_security). Полный прогон 495/495 OK. Без PR (сырой прототип, владелец тестирует).
