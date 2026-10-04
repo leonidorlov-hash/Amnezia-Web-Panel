@@ -89,3 +89,6 @@
 
 ## 04.10 13:20 — rkn-extra-block v1.0 в репо amnezia-blocker (f668906)
 - Доп. контур по спискам C24Be/AS_Network_List: RKN_EXTRA_IN (подсети РКН → DROP новых в INPUT, v4+v6), RKN_EXTRA_OUT (сети VK/Max/OK → REJECT tcp-reset в OUTPUT+FORWARD). Независим от AMNEZIA_BLOCK. Команды rkn-extra-block on|off|status|update|boot, состояние /etc/rkn-extra-block/state, атомарный swap ipset, systemd service+timer (daily+2h jitter). Установка одной командой (install-rkn-extra.sh). Отдельные 4erdenko/ и blablajka/ — копия и обёртка, игнорируем.
+
+## 04.10 13:30 — rkn-extra-block v1.1: log on/off + scan (f74714c)
+- log on/off — rate-limited (10/мин) LOG-правила перед DROP/REJECT, просмотр: journalctl -k -g RKN_EXTRA. scan — ретроспектива: матч IP логов против ipset-наборов. ОБСУЖДАЕТСЯ перенос блокировки+статистики сканов в панель (флажок на сервер + агент почасового сбора).
