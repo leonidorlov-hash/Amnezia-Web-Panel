@@ -3477,7 +3477,7 @@ async def api_rkn_block(request: Request, server_id: int, req: RknBlockRequest):
     return {'status': 'success', 'enabled': req.enabled}
 
 
-RKN_SCAN_SSH_CMD = ("rkn-extra-block status 2>/dev/null | head -1; "
+RKN_SCAN_SSH_CMD = ("rkn-extra-block status 2>/dev/null | head -6; "
                       "echo '===LOG==='; tail -n 2000 /var/log/rkn-scans.json 2>/dev/null")
 
 
