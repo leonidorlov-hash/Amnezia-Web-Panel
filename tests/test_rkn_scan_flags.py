@@ -9,7 +9,8 @@ from unittest.mock import Mock
 
 from fastapi.responses import JSONResponse
 
-FUNCTIONS = {'_parse_rkn_scan_output', 'api_rkn_scan_flags', 'api_rkn_scans'}
+FUNCTIONS = {'_parse_rkn_scan_output', 'api_rkn_scan_flags', 'api_rkn_scans',
+             'api_rkn_scans_clear'}
 
 
 def isolated_panel():
@@ -124,3 +125,42 @@ class FlagsEndpointTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ClearEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.panel = isolated_panel()
+        self.request = SimpleNamespace(session={'user_id': 'admin'}, headers={})
+        self.ran = []
+        ssh = SimpleNamespace(
+            connect=lambda: None,
+            disconnect=lambda: None,
+            run_sudo_command=lambda cmd, timeout=60: self.ran.append(cmd) or ('', '', 0))
+        self.panel['get_ssh'] = Mock(return_value=ssh)
+        self.panel['load_data'] = Mock(return_value={
+            'servers': [{'name': 'A', 'protocols': {}}], 'users': [], 'user_connections': []})
+        self.panel['RKN_FLAG_CACHE'][0] = {'ts': 1, 'data': {'events24': 5}}
+        self.panel['asyncio'] = __import__('asyncio')
+
+    def call(self):
+        return self.panel['asyncio'].run(
+            self.panel['api_rkn_scans_clear'](self.request, 0))
+
+    def test_clear_truncates_remote_log_and_evicts_cache(self):
+        result = self.call()
+        self.assertEqual(result, {'status': 'cleared'})
+        self.assertEqual(self.ran, [': > /var/log/rkn-scans.json'])
+        self.assertNotIn(0, self.panel['RKN_FLAG_CACHE'])
+
+    def test_clear_forbidden_without_admin(self):
+        self.panel['_check_admin'] = Mock(return_value=False)
+        resp = self.call()
+        self.assertIsInstance(resp, JSONResponse)
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.ran, [])
+
+    def test_clear_unknown_server(self):
+        result = self.panel['asyncio'].run(
+            self.panel['api_rkn_scans_clear'](self.request, 99))
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 404)

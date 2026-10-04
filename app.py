@@ -3570,6 +3570,28 @@ async def api_rkn_scans(request: Request, server_id: int):
     return _parse_rkn_scan_output(out, server.get('rkn_block_enabled', False))
 
 
+@app.post('/api/servers/{server_id}/rkn_scans/clear', tags=["Servers"])
+async def api_rkn_scans_clear(request: Request, server_id: int):
+    """Truncate the remote rkn-scans.json so the admin can acknowledge sightings."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    server = data['servers'][server_id]
+    ssh = await asyncio.to_thread(get_ssh, server)
+    await asyncio.to_thread(ssh.connect)
+    try:
+        await asyncio.to_thread(ssh.run_sudo_command, ': > /var/log/rkn-scans.json', 30)
+    finally:
+        try:
+            ssh.disconnect()
+        except Exception:
+            pass
+    RKN_FLAG_CACHE.pop(server_id, None)
+    return {'status': 'cleared'}
+
+
 RKN_FLAG_CACHE = {}
 RKN_FLAG_CACHE_TTL = 900  # seconds; scan flags on the overview page
 

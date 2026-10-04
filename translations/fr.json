@@ -718,5 +718,8 @@
   "rkn_scan_alert": "SCANS DÉTECTÉS !",
   "rkn_block_recent": "Événements récents",
   "rkn_block_sets": "ensembles",
-  "rkn_block_sets_empty": "ensembles vides — échec du update"
+  "rkn_block_sets_empty": "ensembles vides — échec du update",
+  "rkn_block_clear": "Effacer les statistiques de scan",
+  "rkn_block_clear_confirm": "Effacer le journal des scans sur le serveur ?",
+  "rkn_block_cleared": "Statistiques effacées"
 }
