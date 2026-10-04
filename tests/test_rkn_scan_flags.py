@@ -149,7 +149,8 @@ class ClearEndpointTests(unittest.TestCase):
     def test_clear_truncates_remote_log_and_evicts_cache(self):
         result = self.call()
         self.assertEqual(result, {'status': 'cleared'})
-        self.assertEqual(self.ran, [': > /var/log/rkn-scans.json'])
+        self.assertEqual(self.ran,
+                         ['rkn-extra-block clearscans 2>/dev/null || : > /var/log/rkn-scans.json'])
         self.assertNotIn(0, self.panel['RKN_FLAG_CACHE'])
 
     def test_clear_forbidden_without_admin(self):

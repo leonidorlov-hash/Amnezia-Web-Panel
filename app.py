@@ -3582,7 +3582,11 @@ async def api_rkn_scans_clear(request: Request, server_id: int):
     ssh = await asyncio.to_thread(get_ssh, server)
     await asyncio.to_thread(ssh.connect)
     try:
-        await asyncio.to_thread(ssh.run_sudo_command, ': > /var/log/rkn-scans.json', 30)
+        # Новые версии: переносят горизонт сбора (старое не подхватится агентом).
+        # Старые: просто обнулят файл — событие вернётся после часового прогона агента.
+        await asyncio.to_thread(
+            ssh.run_sudo_command,
+            'rkn-extra-block clearscans 2>/dev/null || : > /var/log/rkn-scans.json', 30)
     finally:
         try:
             ssh.disconnect()
