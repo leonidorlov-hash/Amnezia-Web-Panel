@@ -86,3 +86,6 @@
 
 ## 04.10 00:55 — Срочный PR #205: noindex + невинная страница входа
 - https://github.com/PRVTPRO/Amnezia-Web-Panel/pull/205 (ветка fix/noindex-public-login от upstream/main, тесты 474/474). Содержит: X-Robots-Tag middleware, robots.txt Disallow:/, meta robots в base+login, login_translations_json вместо полного словаря, тест test_noindex_robots.
+
+## 04.10 13:20 — rkn-extra-block v1.0 в репо amnezia-blocker (f668906)
+- Доп. контур по спискам C24Be/AS_Network_List: RKN_EXTRA_IN (подсети РКН → DROP новых в INPUT, v4+v6), RKN_EXTRA_OUT (сети VK/Max/OK → REJECT tcp-reset в OUTPUT+FORWARD). Независим от AMNEZIA_BLOCK. Команды rkn-extra-block on|off|status|update|boot, состояние /etc/rkn-extra-block/state, атомарный swap ipset, systemd service+timer (daily+2h jitter). Установка одной командой (install-rkn-extra.sh). Отдельные 4erdenko/ и blablajka/ — копия и обёртка, игнорируем.
