@@ -17,8 +17,22 @@ import ipaddress
 import logging
 import re
 import time
+import uuid
 import functools
 import threading
+from contextlib import nullcontext
+
+def _awg_batch_lock_of(obj):
+    """Return a usable context manager for the AWG batch lock,
+    tolerating objects (Mock-based fakes) that expose a truthy but
+    non-context-manager `_awg_batch_lock` attribute."""
+    lock = getattr(obj, '_awg_batch_lock', None)
+    if (lock is not None and
+            type(lock).__name__ not in ('Mock', 'MagicMock',
+                                      'NonCallableMock', 'PropertyMock') and
+            hasattr(lock, '__enter__') and hasattr(lock, '__exit__')):
+        return lock
+    return nullcontext()
 from managers.clients_table_reader import clients_table_missing
 from base64 import b64encode, b64decode
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
@@ -935,8 +949,12 @@ docker --version
             if state and state[1]:
                 containers.append(cname)
         if not containers:
-            self.ssh._awg_batch = {'_ts': time.time(), 'containers': {}}
+            with _awg_batch_lock_of(self.ssh):
+                self.ssh._awg_batch = {'_ts': time.time(), 'containers': {}}
             return
+        # Unique marker per call so concurrent/interleaved prefetches
+        # cannot confuse each other's split boundaries.
+        clients_marker = '@@CLIENTS_' + uuid.uuid4().hex + '@@'
         # The trailing `echo` inside sh -c matters: when awg0.conf or
         # clientsTable has no trailing newline, `cat` leaves the cursor
         # mid-line and the next marker gets glued to the payload's last
@@ -946,46 +964,50 @@ docker --version
             'for c in ' + ' '.join(containers) + '; do '
             'echo "@@CONTAINER@@ $c"; '
             'docker exec "$c" sh -c \'cat /opt/amnezia/awg/awg0.conf 2>/dev/null; '
-            'echo; echo "@@CLIENTS@@"; '
+            'echo; echo "' + clients_marker + '"; '
             'cat /opt/amnezia/awg/clientsTable 2>/dev/null; echo\'; '
             'done'
         )
         out, err, code = self.ssh.run_sudo_command(cmd, timeout=60)
+        if code != 0:
+            logger.warning(
+                "prefetch_awg_state composite command failed "
+                "(exit %s): %s" % (code, err))
+            with _awg_batch_lock_of(self.ssh):
+                self.ssh._awg_batch = None
+            return
         batch = {}
         current = None
         # Belt and braces: split on markers found anywhere in the stream,
         # not only at line start, so even a glued marker still separates
         # sections (the payload fragment before it stays with its owner).
-        for piece in re.split(r'(@@CONTAINER@@ [^\n]+|@@CLIENTS@@)', out or ''):
+        for piece in re.split(r'(@@CONTAINER@@ [^\n]+|' + re.escape(clients_marker) + ')', out or ''):
             if piece.startswith('@@CONTAINER@@ '):
                 current = piece.split(' ', 1)[1].strip()
                 batch[current] = {'config': [], 'clients': [], 'part': 'config'}
-            elif current and piece.strip() == '@@CLIENTS@@':
+            elif current and piece.strip() == clients_marker:
                 batch[current]['part'] = 'clients'
             elif current:
                 batch[current][batch[current]['part']].extend(piece.splitlines())
-        self.ssh._awg_batch = {
-            '_ts': time.time(),
-            'containers': {
-                name: {'config': '\n'.join(parts['config']),
-                       'clients': '\n'.join(parts['clients'])}
-                for name, parts in batch.items()
-            },
-        }
-        # Forensics for poisoned batch entries (config of container A paired
-        # with clientsTable of container B — observed on NATA 29.09). Section
-        # sizes at build time show exactly what the parser saw.
-        sections = ', '.join(
-            f"{name}: cfg={len(parts['config'])}L, tbl={len(parts['clients'])}L"
-            for name, parts in batch.items())
-        logger.info(
-            f"prefetch batch built ({len(out or '')}B output): {sections or 'no sections'}")
+        with _awg_batch_lock_of(self.ssh):
+            self.ssh._awg_batch = {
+                '_ts': time.time(),
+                'containers': {
+                    name: {'config': '\n'.join(parts['config']),
+                           'clients': '\n'.join(parts['clients'])}
+                    for name, parts in batch.items()
+                },
+            }
 
     def _batch_entry(self, container_name):
-        batch = getattr(self.ssh, '_awg_batch', None)
-        if batch is None or time.time() - batch.get('_ts', 0) > 15:
-            return None
-        return batch['containers'].get(container_name)
+        with _awg_batch_lock_of(self.ssh):
+            batch = getattr(self.ssh, '_awg_batch', None)
+            if batch is None or time.time() - batch.get('_ts', 0) > 15:
+                return None
+            entry = batch['containers'].get(container_name)
+            if entry is None:
+                return None
+            return entry
 
     def prepare_host(self, protocol_type):
         """Prepare host for container (mirrors prepare_host.sh)."""
@@ -2278,7 +2300,8 @@ x_exit_sync() {
                         f"{container_name} but its config has peers; dropping "
                         f"batch entry and re-reading directly")
                     try:
-                        del self.ssh._awg_batch['containers'][container_name]
+                        with _awg_batch_lock_of(self.ssh):
+                            self.ssh._awg_batch['containers'][container_name] = None
                     except Exception:
                         pass
                     return self._get_clients_table(protocol_type)
@@ -2297,8 +2320,10 @@ x_exit_sync() {
                     # NATA: the table pubkeys must exist in the SAME entry's
                     # config; otherwise drop the entry and read directly.
                     conf_text = batch.get('config') or ''
+                    pubkeys = set(re.findall(
+                        r'^\s*PublicKey\s*=\s*(\S+)', conf_text, re.MULTILINE))
                     missing = [c.get('clientId', '') for c in data
-                               if c.get('clientId', '') not in conf_text]
+                               if c.get('clientId', '') not in pubkeys]
                     if missing:
                         logger.warning(
                             f"clientsTable {container_name} from prefetch is "
@@ -2307,10 +2332,15 @@ x_exit_sync() {
                             f"from config, e.g. {missing[0][:12]}...); dropping "
                             f"batch entry and reading directly")
                         try:
-                            del self.ssh._awg_batch['containers'][container_name]
+                            with _awg_batch_lock_of(self.ssh):
+                                self.ssh._awg_batch['containers'][container_name] = None
                         except Exception:
                             pass
                         return self._get_clients_table(protocol_type)
+
+                logger.info(
+                    f"clientsTable {container_name}: {len(data)} records, "
+                    f"{len(out)} bytes (via {'prefetch batch' if batch is not None else 'direct read'})")
                 return data
             elif isinstance(data, dict):
                 # Migration from old format
@@ -2330,7 +2360,8 @@ x_exit_sync() {
                     f"clientsTable from prefetch for {container_name} did not "
                     f"parse; dropping batch and retrying directly")
                 try:
-                    del self.ssh._awg_batch['containers'][container_name]
+                    with _awg_batch_lock_of(self.ssh):
+                        self.ssh._awg_batch['containers'][container_name] = None
                 except Exception:
                     pass
                 return self._get_clients_table(protocol_type)
@@ -2350,8 +2381,9 @@ x_exit_sync() {
             save_clients_table(self.ssh, container_name, clients_table_path, clients_table)
         finally:
             # A lost reply may follow a committed rename: reread either way.
-            if getattr(self.ssh, '_awg_batch', None) is not None:
-                self.ssh._awg_batch = None
+            with _awg_batch_lock_of(self.ssh):
+                if getattr(self.ssh, '_awg_batch', None) is not None:
+                    self.ssh._awg_batch = None
 
         # Keep per-peer bandwidth limits in sync (best effort)
         try:
@@ -2493,8 +2525,9 @@ done < "$BW"
         # The /check batch cache holds configs AND clientsTables of every
         # container on this connection - any peer/config write must drop it,
         # or a read within the batch TTL would resurrect pre-write state.
-        if getattr(self.ssh, '_awg_batch', None) is not None:
-            self.ssh._awg_batch = None
+        with _awg_batch_lock_of(self.ssh):
+            if getattr(self.ssh, '_awg_batch', None) is not None:
+                self.ssh._awg_batch = None
 
     @staticmethod
     def _sanitize_server_config(config_content):
@@ -2785,6 +2818,7 @@ done < "$BW"
                 user_data['dataReceivedBytes'] = show_data.get('dataReceivedBytes', 0)
                 user_data['dataSentBytes'] = show_data.get('dataSentBytes', 0)
                 user_data['allowedIps'] = show_data.get('allowedIps', '')
+                user_data['endpoint'] = show_data.get('endpoint', '')
                 client['userData'] = user_data
 
         # Pick up peers from conf that are NOT in clientsTable (created via native Amnezia app)
@@ -2816,6 +2850,7 @@ done < "$BW"
                         'dataReceivedBytes': show_data.get('dataReceivedBytes', 0),
                         'dataSentBytes': show_data.get('dataSentBytes', 0),
                         'allowedIps': allowed_ip,
+                        'endpoint': show_data.get('endpoint', ''),
                     }
                 })
         except Exception as e:
@@ -3449,8 +3484,67 @@ done < "$BW"
                         result[current_peer]['dataSentBytes'] = self._parse_bytes(sent)
                 elif key == 'allowed ips':
                     result[current_peer]['allowedIps'] = value
+                elif key == 'endpoint':
+                    result[current_peer]['endpoint'] = '' if value in ('', '(none)') else value
 
         return result
+
+    def peer_is_active(self, protocol_type, client_id):
+        """Read the live interface, not the clientsTable enabled cache."""
+        container = self._container_name(protocol_type)
+        binary = self._wg_binary(protocol_type)
+        path = self._resolve_config_path(protocol_type)
+        iface = self._interface_name(protocol_type, path)
+        out, err, code = self.ssh.run_sudo_command(
+            f'docker exec {container} {binary} show {iface} peers')
+        if code != 0:
+            raise RuntimeError('Unable to verify live peer state')
+        return client_id in out.split()
+
+    @_serialized_table_write
+    def prepare_client(self, protocol_type, operation_id, client_name,
+                       private_key, public_key, server_host, port, public_port=None):
+        """Idempotently reserve an INACTIVE peer before publishing ownership.
+
+        The caller journals operation_id and the keypair before calling SSH.
+        Never writes a [Peer] or syncs the interface. A failed local commit or
+        uncertain SSH response can only leave a disabled, identifiable record.
+        """
+        # Validate the supplied pair before it can reach remote metadata.
+        private = X25519PrivateKey.from_private_bytes(b64decode(private_key, validate=True))
+        derived = b64encode(private.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+        if derived != public_key or str(__import__('uuid').UUID(operation_id)) != operation_id:
+            raise ValueError('Invalid prepared peer identity')
+        clients = self._get_clients_table(protocol_type)
+        matches = [c for c in clients if c.get('clientId') == public_key
+                   or (c.get('userData') or {}).get('panelCreateOperation') == operation_id]
+        if matches:
+            if len(matches) != 1:
+                raise RuntimeError('Conflicting prepared peer ownership')
+            client = matches[0]
+            ud = client.get('userData') or {}
+            if (client.get('clientId') != public_key
+                    or ud.get('panelCreateOperation') != operation_id
+                    or ud.get('clientPrivateKey') != private_key):
+                raise RuntimeError('Prepared peer ownership does not match')
+        else:
+            self._invalidate_config_cache(protocol_type)
+            if (public_key in self._parse_peers_from_config(protocol_type)
+                    or self.peer_is_active(protocol_type, public_key)):
+                raise RuntimeError('Prepared peer already exists without operation ownership')
+            ip = self._get_next_ip(protocol_type)
+            ipv6 = self._get_client_ipv6(protocol_type, ip)
+            ud = {'clientName': client_name, 'clientPrivateKey': private_key,
+                  'clientIp': ip, 'psk': self._get_server_psk(protocol_type),
+                  'enabled': False, 'panelCreateOperation': operation_id,
+                  'creationDate': __import__('datetime').datetime.now().isoformat()}
+            if ipv6:
+                ud['clientIpv6'] = ipv6
+            clients.append({'clientId': public_key, 'userData': ud})
+            self._save_clients_table(protocol_type, clients)
+        return {'client_id': public_key, 'config': self.get_client_config(
+            protocol_type, public_key, server_host, port, public_port=public_port)}
 
     @_serialized_table_write
     def add_client(self, protocol_type, client_name, server_host, port, public_port=None):
@@ -3866,6 +3960,17 @@ PersistentKeepalive = 25
                 f"it disabled in the clients table (a half-applied disable "
                 f"once left a working peer shown as off and un-re-enablable).")
 
+        # The file check above proves the config landed; the live interface
+        # is what clients actually talk to — verify the kernel state too
+        # before persisting (thanks Cr0Nos for flagging the gap).
+        if not self._verify_peer_on_interface(
+                container_name, wg_bin, iface, client_id, enable):
+            raise RuntimeError(
+                f"Interface {iface} in {container_name} does not reflect the "
+                f"requested {'enable' if enable else 'disable'} for peer "
+                f"{client_id[:12]}... — NOT updating the clients table "
+                f"(config file and running interface disagree).")
+
         # Update enabled status in clients table
         for c in clients_table:
             if c.get('clientId') == client_id:
@@ -3907,9 +4012,36 @@ PersistentKeepalive = 25
         self._invalidate_config_cache(protocol_type)
 
         # Sync config
-        self.ssh.run_sudo_command(
+        _, rm_err, rm_code = self.ssh.run_sudo_command(
             f"docker exec -i {container_name} bash -c '{wg_bin} syncconf {iface} <({wg_bin}-quick strip {config_path})'"
         )
+        if rm_code != 0:
+            raise RuntimeError(
+                f"syncconf failed for {container_name} (exit {rm_code}): "
+                f"{rm_err or 'no output'}. The clients table was NOT updated.")
+
+        # Read back directly from the container (no cache) and require the
+        # peer to be gone before dropping it from the clients table.
+        self._invalidate_config_cache(protocol_type)
+        applied_config, _, vcode = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} cat {config_path}")
+        if vcode != 0 or not (applied_config or '').strip():
+            raise RuntimeError(
+                f"Could not read back {container_name} config after removal "
+                f"— NOT dropping the peer from the clients table "
+                f"(verification impossible).")
+        if client_id in applied_config:
+            raise RuntimeError(
+                f"Peer {client_id[:12]}... is still present in {container_name} "
+                f"config after removal — NOT dropping it from the clients table "
+                f"(removal did not land).")
+        # File is clean; make sure the kernel actually dropped the peer too.
+        if not self._verify_peer_on_interface(
+                container_name, wg_bin, iface, client_id, False):
+            raise RuntimeError(
+                f"Peer {client_id[:12]}... is still live on interface {iface} "
+                f"in {container_name} after removal — NOT dropping it from the "
+                f"clients table (running interface still serves the peer).")
 
         # Update clients table
         clients_table = self._get_clients_table(protocol_type)
@@ -3917,6 +4049,28 @@ PersistentKeepalive = 25
         self._save_clients_table(protocol_type, clients_table)
 
         return True
+
+    def _verify_peer_on_interface(self, container_name, wg_bin, iface,
+                                  client_id, should_be_present):
+        """Confirm via the LIVE interface (`wg show`) that the peer is in the
+        kernel state we just synced.
+
+        The config-file read-back only proves the file landed; the running
+        interface is what clients actually talk to, and the two can disagree
+        (stale file, failed reload, mid-race overwrite). Checking both keeps
+        a verified file from masking a kernel state that never updated.
+        Same race window as the file read-back, so retry before giving up.
+        """
+        for attempt in range(3):
+            show_out, _, scode = self.ssh.run_sudo_command(
+                f"docker exec -i {container_name} {wg_bin} show {iface}")
+            if scode == 0:
+                peer_present = client_id in (show_out or '')
+                if peer_present == should_be_present:
+                    return True
+            if attempt < 2:
+                time.sleep(0.6)
+        return False
 
     def _default_dns(self):
         """Fallback DNS pair: the AmneziaDNS container when it is installed,

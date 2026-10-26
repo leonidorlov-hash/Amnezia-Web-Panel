@@ -741,6 +741,8 @@ tail -f /dev/null
                         result[current_peer]['dataSentBytes'] = self._parse_bytes(sent)
                 elif key == 'allowed ips':
                     result[current_peer]['allowedIps'] = value
+                elif key == 'endpoint':
+                    result[current_peer]['endpoint'] = '' if value in ('', '(none)') else value
         return result
 
     def get_clients(self):
@@ -765,6 +767,7 @@ tail -f /dev/null
                 user_data['dataReceivedBytes'] = show_data.get('dataReceivedBytes', 0)
                 user_data['dataSentBytes'] = show_data.get('dataSentBytes', 0)
                 user_data['allowedIps'] = show_data.get('allowedIps', '')
+                user_data['endpoint'] = show_data.get('endpoint', '')
                 client['userData'] = user_data
 
         # Pick up peers from conf not in clientsTable (native app clients)
@@ -794,6 +797,7 @@ tail -f /dev/null
                         'dataReceivedBytes': show_data.get('dataReceivedBytes', 0),
                         'dataSentBytes': show_data.get('dataSentBytes', 0),
                         'allowedIps': allowed_ip,
+                        'endpoint': show_data.get('endpoint', ''),
                     }
                 })
         except Exception as e:
@@ -1033,6 +1037,17 @@ AllowedIPs = {client_ip}/32
                 f"disable once left a working peer shown as off and "
                 f"un-re-enablable).")
 
+        # The file check proves the config landed; the live interface is what
+        # clients actually talk to — verify the kernel state too (Cr0Nos's
+        # point: a verified file can still mask an interface that never
+        # updated).
+        if not self._verify_peer_on_interface(client_id, enable):
+            raise RuntimeError(
+                f"Interface {self.INTERFACE} in {self.CONTAINER_NAME} does "
+                f"not reflect the requested {'enable' if enable else 'disable'} "
+                f"for peer {client_id[:12]}... — NOT updating the clients "
+                f"table (config file and running interface disagree).")
+
         # Update enabled status in clients table
         clients_table = self._get_clients_table()
         for c in clients_table:
@@ -1066,17 +1081,48 @@ AllowedIPs = {client_ip}/32
 
         applied_config, _, vcode = self.ssh.run_sudo_command(
             f"docker exec -i {self.CONTAINER_NAME} cat {self.CONFIG_PATH}")
-        if vcode == 0 and client_id in (applied_config or ''):
+        if vcode != 0 or not (applied_config or '').strip():
+            raise RuntimeError(
+                f"Could not read back {self.CONTAINER_NAME} config after "
+                f"removal — NOT dropping it from the clients table "
+                f"(verification impossible).")
+        if client_id in applied_config:
             raise RuntimeError(
                 f"Peer {client_id[:12]}... is still present in "
                 f"{self.CONTAINER_NAME} config after removal — NOT dropping "
                 f"it from the clients table (removal did not land).")
+        # File is clean; make sure the kernel actually dropped the peer too.
+        if not self._verify_peer_on_interface(client_id, False):
+            raise RuntimeError(
+                f"Peer {client_id[:12]}... is still live on interface "
+                f"{self.INTERFACE} after removal — NOT dropping it from the "
+                f"clients table (running interface still serves the peer).")
 
         # Update clients table
         clients_table = self._get_clients_table()
         clients_table = [c for c in clients_table if c.get('clientId') != client_id]
         self._save_clients_table(clients_table)
         return True
+
+    def _verify_peer_on_interface(self, client_id, should_be_present):
+        """Confirm via the LIVE interface (`wg show`) that the peer is in the
+        kernel state we just synced.
+
+        The config-file read-back only proves the file landed; the running
+        interface is what clients actually talk to, and the two can disagree
+        (stale file, failed reload, mid-race overwrite). Same race window
+        as the file read-back, so retry a few times before giving up.
+        """
+        for attempt in range(3):
+            show_out, _, scode = self.ssh.run_sudo_command(
+                f"docker exec -i {self.CONTAINER_NAME} wg show {self.INTERFACE}")
+            if scode == 0:
+                peer_present = client_id in (show_out or '')
+                if peer_present == should_be_present:
+                    return True
+            if attempt < 2:
+                time.sleep(0.6)
+        return False
 
     def _get_dns(self, user_data=None):
         """DNS servers for generated client configs.
