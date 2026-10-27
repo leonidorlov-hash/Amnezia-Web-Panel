@@ -3133,6 +3133,17 @@ def index(request: Request):
     return tpl(request, 'index.html', servers=data['servers'])
 
 
+@app.get('/servers/new', response_class=HTMLResponse, tags=["System Templates"])
+def server_new_page(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url='/login', status_code=302)
+    if user.get('role') != 'admin':
+        # Support operators can manage servers but cannot enroll new SSH hosts.
+        return HTMLResponse('<h1>403 Forbidden</h1>', status_code=403)
+    return tpl(request, 'server_new.html')
+
+
 @app.get('/server/{server_id}', response_class=HTMLResponse, tags=["System Templates"])
 def server_detail(request: Request, server_id: int):
     user = get_current_user(request)
@@ -3450,16 +3461,56 @@ async def _finish_server_operation(operation):
 @app.post('/api/servers/add', tags=["Servers"])
 @serialize_peer_lifecycle
 async def api_add_server(request: Request, req: AddServerRequest):
-    if not _check_admin(request):
-        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    import paramiko as _paramiko
+
+    def classify_add_error(exc):
+        """Map SSH/save failures to a stable machine-readable code.
+
+        The typed checks come first; the message fallback only distinguishes
+        the two host-key states Paramiko reports as generic SSHException.
+        """
+        if isinstance(exc, _paramiko.AuthenticationException):
+            return 'authentication_failed'
+        if isinstance(exc, _paramiko.BadHostKeyException):
+            return 'host_key_changed'
+        if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+            return 'network_error'
+        if isinstance(exc, _paramiko.SSHException):
+            message = str(exc).lower()
+            if 'not found in known_hosts' in message:
+                return 'host_key_unknown'
+            if 'host key' in message and any(
+                    marker in message for marker in ('does not match', 'mismatch', 'changed')):
+                return 'host_key_changed'
+            if any(marker in message for marker in (
+                    'authentication', 'auth failed', 'private key', 'password')):
+                return 'authentication_failed'
+            # Remaining Paramiko handshake/transport failures are reachability
+            # problems: banner errors, refused/invalid connections, closed peers.
+            return 'network_error'
+        return 'internal_error'
+
+    def exception_text(exc):
+        try:
+            return str(exc)
+        except Exception:
+            return type(exc).__name__
+
+    actor = _check_admin(request)
+    # Enrolling a new SSH host is an administrator-only action. Keep the
+    # isinstance guard because some callers/tests inject a truthy sentinel.
+    if not actor or (isinstance(actor, dict) and actor.get('role') != 'admin'):
+        return JSONResponse({'error': 'Forbidden', 'error_code': 'forbidden'}, status_code=403)
     try:
         host = req.host.strip()
         username = req.username.strip()
         name = req.name.strip() or host
         if not host or not username:
-            return JSONResponse({'error': 'Host and username are required'}, status_code=400)
+            return JSONResponse({'error': 'Host and username are required',
+                                 'error_code': 'validation_error'}, status_code=400)
         if not req.password and not req.private_key:
-            return JSONResponse({'error': 'Password or SSH key is required'}, status_code=400)
+            return JSONResponse({'error': 'Password or SSH key is required',
+                                 'error_code': 'validation_error'}, status_code=400)
 
         def verify():
             ssh = SSHManager(host, req.ssh_port, username, req.password, req.private_key)
@@ -3471,7 +3522,13 @@ async def api_add_server(request: Request, req: AddServerRequest):
         try:
             server_info = await asyncio.to_thread(verify)
         except Exception as e:
-            return JSONResponse({'error': f'Connection failed: {e}'}, status_code=400)
+            error_code = classify_add_error(e)
+            # Log only the classification and exception type; credentials and
+            # raw Paramiko/OS detail must never reach the panel log here.
+            logger.warning("Server add verification failed: %s (%s)",
+                           error_code, type(e).__name__)
+            return JSONResponse({'error': f'Connection failed: {exception_text(e)}',
+                                 'error_code': error_code}, status_code=400)
 
         server = {
             'uid': uuid.uuid4().hex,
@@ -3489,7 +3546,7 @@ async def api_add_server(request: Request, req: AddServerRequest):
         return {'status': 'success', 'server_id': server_id, 'server_info': server_info}
     except Exception as e:
         logger.exception("Error adding server")
-        return JSONResponse({'error': str(e)}, status_code=500)
+        return JSONResponse({'error': exception_text(e), 'error_code': 'internal_error'}, status_code=500)
 
 
 @app.post('/api/servers/{server_id}/edit', tags=["Servers"])
@@ -7809,9 +7866,23 @@ async def api_revoke_token(request: Request, token_id: str):
     return {'status': 'success'}
 
 
+def _backup_admin(request):
+    """Panel backups contain secrets and can inject accounts/inventory.
+
+    Keep backup download/restore admin-only without changing the wider
+    admin/support policy used by the rest of the panel.
+    """
+    actor = _check_admin(request)
+    if not actor:
+        return None
+    if isinstance(actor, dict) and actor.get('role') != 'admin':
+        return None
+    return actor
+
+
 @app.get('/api/settings/backup/download', tags=["Settings"])
 def api_backup_download(request: Request):
-    if not _check_admin(request):
+    if not _backup_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     if not os.path.exists(DATA_FILE):
         return JSONResponse({'error': 'Data file not found'}, status_code=404)
@@ -7822,7 +7893,8 @@ def api_backup_download(request: Request):
 @serialize_peer_lifecycle
 async def api_backup_restore(request: Request, file: UploadFile = File(...),
                              operation_id: Optional[str] = Form(None)):
-    if not _check_admin(request):
+    backup_actor = _backup_admin(request)
+    if not backup_actor:
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
         # Limit the in-memory JSON read; enforce request-body limits at the
@@ -7857,7 +7929,10 @@ async def api_backup_restore(request: Request, file: UploadFile = File(...),
         async with DATA_LOCK:
             # Even identical-looking old backups can rewind traffic baselines.
             current = load_data()
-            actor = str(get_current_user(request)['id'])
+            # Bearer-admin restores have no session, so the resolved token
+            # owner is the audit actor; session restores keep the same id.
+            actor = str(backup_actor.get('id') if isinstance(backup_actor, dict)
+                        else get_current_user(request)['id'])
             store = RecoveryStore(DATA_FILE)
             op = operation_id if isinstance(operation_id, str) else secrets.token_hex(16)
             intent = recovery_digest({'backup_sha256': hashlib.sha256(content).hexdigest()})

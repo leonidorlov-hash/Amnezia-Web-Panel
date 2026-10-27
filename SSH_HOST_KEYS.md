@@ -45,8 +45,11 @@ Inspection uses the same pinned-algorithm preference as Paramiko SSHClient,
 so an existing RSA pin is not falsely reported changed merely because the
 server also offers Ed25519 or ECDSA.
 
-Compare the displayed algorithm and SHA256 fingerprint with an independent VPS
-console (use the matching `/etc/ssh/ssh_host_*_key.pub`, not necessarily Ed25519).
+Compare the algorithm and SHA256 fingerprint shown by the panel with an
+independent VPS console, using the public host key file for **the same
+algorithm** (Ed25519 against Ed25519, RSA against RSA, and so on; the panel
+prefers the pinned algorithm rather than always Ed25519). A fingerprint from a
+different key type is expected to differ.
 For replacement, investigate why the old fingerprint changed. Tick the explicit
 verification checkbox, then **Trust key and retry**. The page reloads and retries
 normal operations with a fresh connection and reset cooldown. No VPN clients,
@@ -105,14 +108,39 @@ write access to trusted operators and ensure the panel user can read it.
    independently verified administrative SSH session. On the endpoint:
 
    ```sh
-   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
-   cat /etc/ssh/ssh_host_ed25519_key.pub
+   # List every standard OpenSSH public host key file that exists.
+   for pub in /etc/ssh/ssh_host_*_key.pub; do
+       [ -e "$pub" ] || continue
+       ssh-keygen -lf "$pub" -E sha256
+   done
+
+   # If sshd uses a non-standard HostKey path, read the effective config.
+   sshd -T 2>/dev/null | awk '$1 == "hostkey" {print $2}' |
+       while IFS= read -r key; do
+           [ -e "${key}.pub" ] || continue
+           ssh-keygen -lf "${key}.pub" -E sha256
+       done
    ```
+
+   The first command covers the usual `/etc/ssh/ssh_host_*_key.pub` files. The
+   `sshd -T` fallback prints the `HostKey` paths actually in effect, including
+   non-standard locations; run it on the endpoint itself (root is usually
+   required). Then print the matching public key when you need its base64 body:
+
+   ```sh
+   cat /etc/ssh/ssh_host_ed25519_key.pub   # replace with the matching file
+   ```
+
+   `ssh-keygen -lf ... -E sha256` prints the fingerprint in SHA256 form. Compare
+   the panel's algorithm (for example `ssh-ed25519`) and SHA256 fingerprint only
+   with the output line for that **same algorithm**; fingerprints produced for
+   different key algorithms are not comparable.
 
    These are **public host keys**, never client private keys.
 2. Confirm the fingerprint independently. `ssh-keyscan` can collect a candidate
    but cannot authenticate it: never pipe its output directly into trusted
    known_hosts without comparing fingerprints through the independent channel.
+   `ssh-keyscan` does not check the identity of the endpoint.
 3. Add an OpenSSH known_hosts line to a private candidate trust file:
 
    ```text

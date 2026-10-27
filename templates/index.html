@@ -10,9 +10,13 @@
             {{ _('nav_servers') }}
         </h1>
         <div class="page-header__actions">
-            <button class="btn btn-primary" onclick="openModal('addServerModal')">
+            {% if current_user.role == 'admin' %}
+            <a href="/servers/new" class="btn btn-primary">
                 <span>＋</span> {{ _('add_server') }}
-            </button>
+            </a>
+            {% else %}
+            <span class="text-muted text-sm">{{ _('add_server_admin_only') }}</span>
+            {% endif %}
         </div>
     </div>
 
@@ -100,9 +104,13 @@
         <div class="empty-desc">
             {{ _('add_server_desc') }}
         </div>
-        <button class="btn btn-primary" onclick="openModal('addServerModal')">
+        {% if current_user.role == 'admin' %}
+        <a href="/servers/new" class="btn btn-primary">
             <span>＋</span> {{ _('add_server') }}
-        </button>
+        </a>
+        {% else %}
+        <p class="text-muted text-sm">{{ _('add_server_admin_only') }}</p>
+        {% endif %}
     </div>
     {% endif %}
 </section>
@@ -183,7 +191,8 @@
     </div>
 </div>
 
-<!-- ===== Add Server Modal ===== -->
+{% if current_user.role == 'admin' %}
+<!-- ===== Add Server Modal (legacy; admin links now use /servers/new) ===== -->
 <div class="modal-backdrop" id="addServerModal">
     <div class="modal">
         <div class="modal-header">
@@ -248,6 +257,7 @@
         </form>
     </div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -437,7 +447,10 @@
     }
     for (const kind of ['add', 'edit']) {
         const ids = kind === 'add' ? ['serverHost', 'serverPort'] : ['editServerHost', 'editServerPort'];
-        ids.forEach(id => document.getElementById(id).addEventListener('input', () => resetOnboardingTrust(kind)));
+        ids.forEach(id => {
+            const input = document.getElementById(id);
+            if (input) input.addEventListener('input', () => resetOnboardingTrust(kind));
+        });
     }
 
     /* ========== Ping indicators ========== */

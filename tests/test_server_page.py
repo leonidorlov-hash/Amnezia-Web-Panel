@@ -149,6 +149,20 @@ class HostAppsUiWiringTests(unittest.TestCase):
     def setUp(self):
         self.page = read('templates', 'server.html')
 
+    def _container_status_loop(self):
+        """The MARKETPLACE_APPS loop in applyInstalledAppsVisibility that
+        toggles cards from container protocol status."""
+        page = self.page
+        start = page.index('function applyInstalledAppsVisibility()')
+        start = page.index('MARKETPLACE_APPS.forEach(app => {', start)
+        stop = page.index('const installed = isAppInstalled(', start)
+        return page[start:stop]
+
+    def _assert_host_cards_skip_container_status(self):
+        loop = self._container_status_loop()
+        self.assertIn("if (app.proto === 'smartroute') return;", loop)
+        self.assertIn("if (app.proto === 'rknblock') return;", loop)
+
     def test_only_confirmed_key_sharing_warning_is_rendered(self):
         self.assertIn('simAlerts', self.page)
         self.assertNotIn('multiIpAlerts', self.page)
@@ -189,8 +203,7 @@ class HostAppsUiWiringTests(unittest.TestCase):
         self.assertIn('function renderSmartRouteCard(', self.page)
         self.assertIn('smartroute-toggle-btn', self.page)
         # the card must not be shown via the container-status path
-        self.assertIn("if (app.proto === 'smartroute' || app.proto === 'rknblock') return;",
-                      self.page)
+        self._assert_host_cards_skip_container_status()
 
     def test_rknblock_card_as_marketplace_app(self):
         self.assertIn('id="proto-rknblock"', self.page)
@@ -235,8 +248,7 @@ class HostAppsUiWiringTests(unittest.TestCase):
             self.assertEqual(missing, [], f'{lang}: {missing}')
 
     def test_card_not_shown_via_container_status(self):
-        self.assertIn("if (app.proto === 'smartroute' || app.proto === 'rknblock') return;",
-                      self.page)
+        self._assert_host_cards_skip_container_status()
 
     def test_card_dns_pair_inputs(self):
         self.assertIn('id="smartroute-direct-dns"', self.page)

@@ -1,0 +1,787 @@
+{% extends "base.html" %}
+
+{% block page_class %}page page--server-new{% endblock %}
+{% block title_extra %}{{ _('server_new_title') }}{% endblock %}
+
+{% block content %}
+<section class="server-wizard" aria-labelledby="wizardPageTitle">
+    <div class="page-header">
+        <div>
+            <a class="back-link" href="/">{{ _('back_to_servers') }}</a>
+            <h1 class="section-title page-header__title" id="wizardPageTitle">
+                <span class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        aria-hidden="true"><rect x="3" y="3" width="18" height="12" rx="2"/><line x1="7" y1="21" x2="17" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M12 7v4"/><path d="M10 9h4"/></svg></span>
+                {{ _('server_new_title') }}
+            </h1>
+        </div>
+    </div>
+
+    <p class="text-muted wizard-intro">{{ _('server_new_subtitle') }}</p>
+
+    <ol class="wizard-progress" aria-label="{{ _('server_new_title') }}">
+        {% set wizard_steps = [
+            ('1', 'wizard_step_address'),
+            ('2', 'wizard_step_trust'),
+            ('3', 'wizard_step_credentials'),
+            ('4', 'wizard_step_connect')
+        ] %}
+        {% for number, label in wizard_steps %}
+        <li class="wizard-progress__item{% if loop.first %} is-active{% endif %}"
+            data-wizard-progress="{{ number }}"{% if loop.first %} aria-current="step"{% endif %}>
+            <span class="wizard-progress__number" aria-hidden="true">{{ number }}</span>
+            <span class="wizard-progress__label">{{ _(label) }}</span>
+        </li>
+        {% endfor %}
+    </ol>
+    <p class="wizard-progress-mobile" id="wizardProgressMobile" aria-live="polite" aria-atomic="true">{{ _('wizard_progress_mobile').replace('{current}', '1').replace('{total}', '4') }}</p>
+
+    <noscript>
+        <div class="wizard-alert" role="alert">{{ _('wizard_js_required') }}</div>
+    </noscript>
+
+    <div class="card wizard-card">
+        <form id="serverWizardForm" novalidate onsubmit="return wizardFormSubmit(event)">
+
+            <!-- Step 1: address -->
+            <section class="wizard-step" data-wizard-step="1" aria-labelledby="wizardAddressTitle">
+                <h2 class="wizard-step__title" id="wizardAddressTitle" tabindex="-1">
+                    {{ _('wizard_address_title') }}
+                </h2>
+                <p class="text-muted wizard-step__desc">{{ _('wizard_address_desc') }}</p>
+
+                <div class="wizard-alert" id="wizardAddressError" role="alert" hidden></div>
+
+                <div class="form-group">
+                    <label class="form-label" for="wizardName">{{ _('wizard_name_optional') }}</label>
+                    <input class="form-input" type="text" id="wizardName" maxlength="120"
+                        placeholder="{{ _('wizard_name_placeholder') }}" autocomplete="off">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="wizardHost">{{ _('ssh_host') }}</label>
+                        <input class="form-input" type="text" id="wizardHost" maxlength="253" required
+                            placeholder="192.0.2.10" autocomplete="off" autocapitalize="none" spellcheck="false">
+                        <div class="form-hint">{{ _('wizard_host_hint') }}</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="wizardPort">{{ _('ssh_port') }}</label>
+                        <input class="form-input" type="number" id="wizardPort" min="1" max="65535"
+                            value="22" inputmode="numeric" required>
+                        <div class="form-hint">{{ _('wizard_port_hint') }}</div>
+                    </div>
+                </div>
+
+                <div class="wizard-actions">
+                    <a class="btn btn-secondary" href="/">{{ _('cancel') }}</a>
+                    <button class="btn btn-primary wizard-actions__end" type="button" id="wizardAddressNext">{{ _('wizard_continue') }}</button>
+                </div>
+            </section>
+
+            <!-- Step 2: host key -->
+            <section class="wizard-step" data-wizard-step="2" aria-labelledby="wizardTrustTitle" hidden>
+                <h2 class="wizard-step__title" id="wizardTrustTitle" tabindex="-1">
+                    {{ _('wizard_trust_title') }}
+                </h2>
+                <p class="text-muted wizard-step__desc">{{ _('wizard_trust_desc') }}</p>
+
+                <div class="wizard-alert" id="wizardInspectError" role="alert" hidden></div>
+
+                <div id="wizardTrustBody" hidden>
+                    <div class="wizard-trust-head">
+                        <span class="badge badge-warn" id="wizardTrustBadge"></span>
+                        <span class="wizard-endpoint" id="wizardTrustEndpoint" dir="ltr"></span>
+                    </div>
+                    <p class="wizard-trust-help" id="wizardTrustHelp"></p>
+
+                    <div class="wizard-fingerprints">
+                        <div class="wizard-fingerprint-block">
+                            <div class="form-label">{{ _('wizard_trust_new_label') }}</div>
+                            <pre class="wizard-fingerprint" id="wizardTrustFingerprint" dir="ltr"></pre>
+                        </div>
+                        <div class="wizard-fingerprint-block" id="wizardOldFingerprintWrap" hidden>
+                            <div class="form-label">{{ _('wizard_trust_old_label') }}</div>
+                            <pre class="wizard-fingerprint" id="wizardOldFingerprints" dir="ltr"></pre>
+                        </div>
+                    </div>
+
+                    <div class="wizard-command-card">
+                        <div class="form-label">{{ _('wizard_trust_command_label') }}</div>
+                        <div class="wizard-command-row">
+                            <pre class="wizard-command" id="wizardHostKeyCommand" dir="ltr">for f in /etc/ssh/ssh_host_*_key.pub; do [ -f "$f" ] && ssh-keygen -lf "$f" -E sha256; done;</pre>
+                            <button class="btn btn-secondary btn-sm" type="button"
+                                onclick="wizardCopyHostKeyCommand()">{{ _('wizard_copy_command') }}</button>
+                        </div>
+                    </div>
+
+                    <details class="wizard-expert">
+                        <summary>{{ _('wizard_expert_summary') }}</summary>
+                        <p class="form-hint">{{ _('wizard_expert_text') }}</p>
+                        <div class="form-label">{{ _('wizard_expert_command_label') }}</div>
+                        <pre class="wizard-command" dir="ltr">sudo sshd -T | grep -Ei '^(hostkey|port|listenaddress)'</pre>
+                    </details>
+
+                    <div id="wizardTrustConfirmWrap">
+                        <label class="wizard-check" id="wizardTrustUnknownCheck">
+                            <input type="checkbox" id="wizardTrustVerified"
+                                onchange="wizardSyncTrustButton()">
+                            <span>{{ _('wizard_trust_confirm_unknown') }}</span>
+                        </label>
+                        <div id="wizardTrustChangedChecklist" hidden>
+                            <label class="wizard-check">
+                                <input type="checkbox" id="wizardTrustChangedVerified"
+                                    onchange="wizardSyncTrustButton()">
+                                <span>{{ _('wizard_trust_confirm_changed_verified') }}</span>
+                            </label>
+                            <label class="wizard-check">
+                                <input type="checkbox" id="wizardTrustChangedReplace"
+                                    onchange="wizardSyncTrustButton()">
+                                <span>{{ _('wizard_trust_confirm_changed_replace') }}</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="wizard-actions">
+                        <button class="btn btn-secondary" type="button" id="wizardTrustBack"
+                            onclick="wizardBackToAddress()">{{ _('wizard_back') }}</button>
+                        <button class="btn btn-secondary" type="button" id="wizardTrustRefresh"
+                            onclick="wizardReinspect()">{{ _('wizard_trust_refresh') }}</button>
+                        <button class="btn btn-primary wizard-actions__end" type="button"
+                            id="wizardTrustContinue" disabled>
+                            {{ _('wizard_trust_confirm') }}
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 3: credentials -->
+            <section class="wizard-step" data-wizard-step="3" aria-labelledby="wizardCredentialsTitle" hidden>
+                <h2 class="wizard-step__title" id="wizardCredentialsTitle" tabindex="-1">
+                    {{ _('wizard_credentials_title') }}
+                </h2>
+                <p class="text-muted wizard-step__desc">{{ _('wizard_credentials_desc') }}</p>
+
+                <div class="wizard-alert" id="wizardCredentialsError" role="alert" hidden></div>
+
+                <div class="form-group">
+                    <label class="form-label" for="wizardUser">{{ _('ssh_user') }}</label>
+                    <input class="form-input" type="text" id="wizardUser" maxlength="120" required
+                        placeholder="root" autocomplete="off" autocapitalize="none" spellcheck="false">
+                </div>
+
+                <div class="tabs wizard-auth-tabs" role="tablist" aria-label="{{ _('wizard_credentials_title') }}">
+                    <button class="tab active" type="button" role="tab" id="wizardPasswordTab"
+                        aria-selected="true" aria-controls="wizardPasswordPanel"
+                        onclick="wizardUseAuth('password')">{{ _('ssh_password') }}</button>
+                    <button class="tab" type="button" role="tab" id="wizardKeyTab"
+                        aria-selected="false" aria-controls="wizardKeyPanel"
+                        onclick="wizardUseAuth('key')">{{ _('ssh_key') }}</button>
+                </div>
+
+                <div id="wizardPasswordPanel" role="tabpanel" aria-labelledby="wizardPasswordTab">
+                    <div class="form-group">
+                        <label class="form-label" for="wizardPassword">{{ _('ssh_password') }}</label>
+                        <input class="form-input" type="password" id="wizardPassword"
+                            autocomplete="off" autocapitalize="none" spellcheck="false">
+                        <div class="form-hint">{{ _('wizard_password_hint') }}</div>
+                    </div>
+                </div>
+
+                <div id="wizardKeyPanel" role="tabpanel" aria-labelledby="wizardKeyTab" hidden>
+                    <div class="form-group">
+                        <label class="form-label" for="wizardKey">{{ _('ssh_key') }}</label>
+                        <textarea class="form-textarea" id="wizardKey" autocomplete="off"
+                            autocapitalize="none" spellcheck="false"></textarea>
+                        <div class="form-hint">{{ _('wizard_key_hint') }}</div>
+                    </div>
+                </div>
+
+                <div class="wizard-actions">
+                    <button class="btn btn-secondary" type="button"
+                        onclick="wizardSetStep(2)">{{ _('wizard_back') }}</button>
+                    <button class="btn btn-primary wizard-actions__end" type="button"
+                        onclick="wizardReview()">{{ _('wizard_continue') }}</button>
+                </div>
+            </section>
+
+            <!-- Step 4: review and connect -->
+            <section class="wizard-step" data-wizard-step="4" aria-labelledby="wizardConnectTitle" hidden>
+                <h2 class="wizard-step__title" id="wizardConnectTitle" tabindex="-1">
+                    {{ _('wizard_connect_title') }}
+                </h2>
+                <p class="text-muted wizard-step__desc">{{ _('wizard_connect_desc') }}</p>
+
+                <div class="wizard-alert" id="wizardConnectError" role="alert" hidden></div>
+
+                <div id="wizardConnectPanel">
+                    <dl class="wizard-summary">
+                        <div>
+                            <dt>{{ _('ssh_host') }}</dt>
+                            <dd id="wizardSummaryHost" dir="ltr"></dd>
+                        </div>
+                        <div>
+                            <dt>{{ _('ssh_port') }}</dt>
+                            <dd id="wizardSummaryPort"></dd>
+                        </div>
+                        <div>
+                            <dt>{{ _('ssh_user') }}</dt>
+                            <dd id="wizardSummaryUser" dir="ltr"></dd>
+                        </div>
+                        <div>
+                            <dt>{{ _('wizard_summary_auth') }}</dt>
+                            <dd id="wizardSummaryAuth"></dd>
+                        </div>
+                        <div>
+                            <dt>{{ _('wizard_summary_trust') }}</dt>
+                            <dd id="wizardSummaryTrust"></dd>
+                        </div>
+                    </dl>
+
+                    <div class="wizard-actions">
+                        <button class="btn btn-secondary" type="button"
+                            onclick="wizardBackToCredentials()">{{ _('wizard_back') }}</button>
+                        <button class="btn btn-primary wizard-actions__end" type="button"
+                            id="wizardConnectBtn" onclick="wizardConnect()">
+                            {{ _('wizard_connect_button') }}
+                        </button>
+                    </div>
+                </div>
+
+                <div class="wizard-success" id="wizardSuccess" hidden tabindex="-1">
+                    <div class="wizard-success__icon" aria-hidden="true">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                            <polyline points="22 4 12 14.01 9 11.01"/>
+                        </svg>
+                    </div>
+                    <h3>{{ _('server_added') }}</h3>
+                    <p class="text-muted">{{ _('wizard_success_desc') }}</p>
+                    <div class="wizard-actions">
+                        <a class="btn btn-secondary" href="/">{{ _('back_to_servers') }}</a>
+                        <a class="btn btn-primary wizard-actions__end" id="wizardOpenServer"
+                            href="/">{{ _('wizard_open_server') }}</a>
+                    </div>
+                </div>
+            </section>
+        </form>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const wizardState = {
+        step: 1,
+        sequence: 0,
+        candidate: null,
+        trustSatisfied: false,
+        trustNotice: '',
+        authMethod: 'password',
+        busy: false,
+    };
+
+    function wizardEl(id) {
+        return document.getElementById(id);
+    }
+
+    function wizardShowError(id, message) {
+        const element = wizardEl(id);
+        if (!element) return;
+        element.textContent = message || '';
+        element.hidden = !message;
+    }
+
+    function wizardClearError(id) {
+        wizardShowError(id, '');
+    }
+
+    function wizardSetStep(step) {
+        if (!Number.isInteger(step) || step < 1 || step > 4) return;
+        wizardState.step = step;
+        document.querySelectorAll('[data-wizard-step]').forEach(section => {
+            section.hidden = Number(section.dataset.wizardStep) !== step;
+        });
+        document.querySelectorAll('[data-wizard-progress]').forEach(item => {
+            const number = Number(item.dataset.wizardProgress);
+            item.classList.toggle('is-active', number === step);
+            item.classList.toggle('is-complete', number < step);
+            if (number === step) item.setAttribute('aria-current', 'step');
+            else item.removeAttribute('aria-current');
+        });
+        const mobileProgress = wizardEl('wizardProgressMobile');
+        if (mobileProgress) {
+            mobileProgress.textContent = _('wizard_progress_mobile')
+                .replace('{current}', String(step))
+                .replace('{total}', '4');
+        }
+        const section = document.querySelector('[data-wizard-step="' + step + '"]');
+        const heading = section ? section.querySelector('h2') : null;
+        if (heading) heading.focus({ preventScroll: true });
+        window.scrollTo(0, 0);
+    }
+
+    function wizardReadAddress() {
+        const portText = wizardEl('wizardPort').value.trim();
+        return {
+            host: wizardEl('wizardHost').value.trim(),
+            ssh_port: portText === '' ? 22 : Number(portText),
+        };
+    }
+
+    function wizardSameEndpoint(left, right) {
+        return Boolean(left && right && left.host === right.host && left.ssh_port === right.ssh_port);
+    }
+
+    function wizardValidateAddress() {
+        wizardClearError('wizardAddressError');
+        const endpoint = wizardReadAddress();
+        const invalidHost = !endpoint.host || endpoint.host.length > 253 ||
+            /[\s,|\[\]\/\\]/.test(endpoint.host) || endpoint.host.includes('://');
+        if (invalidHost) {
+            wizardShowError('wizardAddressError', _('wizard_error_host'));
+            wizardEl('wizardHost').focus();
+            return false;
+        }
+        if (!Number.isInteger(endpoint.ssh_port) || endpoint.ssh_port < 1 || endpoint.ssh_port > 65535) {
+            wizardShowError('wizardAddressError', _('wizard_error_port'));
+            wizardEl('wizardPort').focus();
+            return false;
+        }
+        return true;
+    }
+
+    function wizardClearCredentials() {
+        wizardEl('wizardUser').value = '';
+        wizardEl('wizardPassword').value = '';
+        wizardEl('wizardKey').value = '';
+    }
+
+    function wizardResetTrustUi() {
+        const body = wizardEl('wizardTrustBody');
+        if (body) body.hidden = true;
+        ['wizardTrustVerified', 'wizardTrustChangedVerified', 'wizardTrustChangedReplace'].forEach(id => {
+            const checkbox = wizardEl(id);
+            if (checkbox) checkbox.checked = false;
+        });
+        const button = wizardEl('wizardTrustContinue');
+        if (button) {
+            button.disabled = true;
+            button.textContent = _('wizard_trust_confirm');
+        }
+        const confirmWrap = wizardEl('wizardTrustConfirmWrap');
+        if (confirmWrap) confirmWrap.hidden = false;
+        const oldWrap = wizardEl('wizardOldFingerprintWrap');
+        if (oldWrap) oldWrap.hidden = true;
+        wizardClearError('wizardInspectError');
+    }
+
+    function wizardRestoreConnectButton() {
+        // The add request may have been superseded by a host-key re-check.
+        // Restore the button independently of the wizard sequence so a stale
+        // request cannot leave the hidden result step stuck on "Connecting...".
+        const connect = wizardEl('wizardConnectBtn');
+        if (connect) {
+            connect.disabled = false;
+            connect.textContent = _('wizard_connect_button');
+        }
+    }
+
+    function wizardInvalidateCandidate() {
+        wizardState.sequence += 1;
+        wizardState.candidate = null;
+        wizardState.trustSatisfied = false;
+        wizardState.trustNotice = '';
+        wizardState.busy = false;
+        wizardResetTrustUi();
+        wizardClearCredentials();
+        wizardClearError('wizardCredentialsError');
+        wizardClearError('wizardConnectError');
+        const next = wizardEl('wizardAddressNext');
+        if (next) {
+            next.disabled = false;
+            next.textContent = _('wizard_continue');
+        }
+        const refresh = wizardEl('wizardTrustRefresh');
+        if (refresh) refresh.disabled = false;
+        // Only reset the result-step button; active inspect controls keep
+        // their own state until wizardRunInspect() finishes.
+        wizardRestoreConnectButton();
+        if (wizardState.step > 1) wizardSetStep(1);
+    }
+
+    function wizardSyncTrustButton() {
+        const candidate = wizardState.candidate;
+        const button = wizardEl('wizardTrustContinue');
+        if (!candidate || !button) return;
+        if (candidate.status === 'unknown') {
+            button.disabled = !wizardEl('wizardTrustVerified').checked;
+        } else if (candidate.status === 'changed') {
+            button.disabled = !(wizardEl('wizardTrustChangedVerified').checked &&
+                wizardEl('wizardTrustChangedReplace').checked);
+        } else {
+            button.disabled = false;
+        }
+    }
+
+    function wizardRenderTrust(data) {
+        const status = data.status;
+        wizardState.candidate = {
+            token: data.token,
+            endpoint: wizardReadAddress(),
+            status: status,
+        };
+        wizardState.trustSatisfied = status === 'trusted';
+
+        const badge = wizardEl('wizardTrustBadge');
+        badge.className = 'badge ' + ({
+            unknown: 'badge-warn',
+            changed: 'badge-danger',
+            trusted: 'badge-success',
+        }[status] || 'badge-secondary');
+        badge.textContent = _('ssh_trust_' + status);
+        wizardEl('wizardTrustEndpoint').textContent = data.host + ':' + data.port;
+        wizardEl('wizardTrustFingerprint').textContent = data.algorithm + ' ' + data.fingerprint;
+
+        const oldKeys = Array.isArray(data.old_fingerprints) ? data.old_fingerprints : [];
+        wizardEl('wizardOldFingerprints').textContent = oldKeys.length
+            ? oldKeys.map(key => key.algorithm + ' ' + key.fingerprint).join('\n')
+            : '—';
+        wizardEl('wizardOldFingerprintWrap').hidden = status !== 'changed';
+
+        const help = {
+            unknown: _('wizard_trust_unknown_help'),
+            changed: _('wizard_trust_changed_help'),
+            trusted: _('wizard_trust_trusted_help'),
+        }[status] || '';
+        wizardEl('wizardTrustHelp').textContent = help;
+
+        wizardEl('wizardTrustUnknownCheck').hidden = status !== 'unknown';
+        wizardEl('wizardTrustChangedChecklist').hidden = status !== 'changed';
+        wizardEl('wizardTrustConfirmWrap').hidden = status === 'trusted';
+        wizardEl('wizardTrustVerified').checked = false;
+        wizardEl('wizardTrustChangedVerified').checked = false;
+        wizardEl('wizardTrustChangedReplace').checked = false;
+
+        const button = wizardEl('wizardTrustContinue');
+        button.textContent = status === 'trusted' ? _('wizard_continue') : _('wizard_trust_confirm');
+        button.disabled = status !== 'trusted';
+        wizardEl('wizardTrustBody').hidden = false;
+        if (wizardState.trustNotice) {
+            wizardShowError('wizardInspectError', wizardState.trustNotice);
+        }
+    }
+
+    async function wizardRunInspect() {
+        if (wizardState.busy) return;
+        const endpoint = wizardReadAddress();
+        const sequence = ++wizardState.sequence;
+        wizardState.busy = true;
+        wizardState.trustSatisfied = false;
+        wizardState.candidate = null;
+        wizardResetTrustUi();
+        wizardClearError('wizardAddressError');
+        const next = wizardEl('wizardAddressNext');
+        const refresh = wizardEl('wizardTrustRefresh');
+        const nextText = next.textContent;
+        next.disabled = true;
+        next.textContent = _('wizard_checking_key');
+        refresh.disabled = true;
+        try {
+            const data = await apiCall('/api/ssh-trust/onboarding/inspect', 'POST', endpoint);
+            if (sequence !== wizardState.sequence) return;
+            if (!wizardSameEndpoint(endpoint, wizardReadAddress())) {
+                wizardInvalidateCandidate();
+                return;
+            }
+            if (!data || !['unknown', 'changed', 'trusted'].includes(data.status) ||
+                (data.status !== 'trusted' && !data.token)) {
+                throw new Error(_('wizard_error_inspect'));
+            }
+            wizardRenderTrust(data);
+            wizardSetStep(2);
+        } catch (error) {
+            if (sequence !== wizardState.sequence) return;
+            if (!wizardSameEndpoint(endpoint, wizardReadAddress())) {
+                wizardInvalidateCandidate();
+                return;
+            }
+            wizardShowError('wizardInspectError', _('wizard_error_inspect'));
+            if (wizardState.step === 1) wizardShowError('wizardAddressError', _('wizard_error_inspect'));
+        } finally {
+            if (sequence === wizardState.sequence) {
+                wizardState.busy = false;
+                next.disabled = false;
+                next.textContent = nextText || _('wizard_continue');
+                refresh.disabled = false;
+            }
+        }
+    }
+
+    function wizardAddressNext() {
+        if (wizardState.busy) return;
+        if (!wizardValidateAddress()) return;
+        wizardRunInspect();
+    }
+
+    function wizardReinspect() {
+        if (wizardState.busy) return;
+        if (!wizardValidateAddress()) {
+            wizardSetStep(1);
+            return;
+        }
+        wizardRunInspect();
+    }
+
+    function wizardBackToAddress() {
+        if (wizardState.busy) return;
+        wizardSetStep(1);
+        wizardEl('wizardHost').focus();
+    }
+
+    function wizardBackToCredentials() {
+        if (wizardState.busy) return;
+        wizardSetStep(3);
+    }
+
+    async function wizardTrustContinue() {
+        if (wizardState.busy) return;
+        const candidate = wizardState.candidate;
+        if (!candidate) {
+            wizardSetStep(1);
+            return;
+        }
+        if (!wizardSameEndpoint(candidate.endpoint, wizardReadAddress())) {
+            wizardInvalidateCandidate();
+            return;
+        }
+        if (wizardState.trustSatisfied) {
+            wizardSetStep(3);
+            return;
+        }
+        if (candidate.status === 'trusted') {
+            wizardState.trustSatisfied = true;
+            wizardSetStep(3);
+            return;
+        }
+        if (candidate.status === 'unknown' && !wizardEl('wizardTrustVerified').checked) return;
+        if (candidate.status === 'changed' &&
+            !(wizardEl('wizardTrustChangedVerified').checked &&
+              wizardEl('wizardTrustChangedReplace').checked)) return;
+
+        const sequence = wizardState.sequence;
+        const button = wizardEl('wizardTrustContinue');
+        wizardState.busy = true;
+        button.disabled = true;
+        wizardClearError('wizardInspectError');
+        try {
+            await apiCall('/api/ssh-trust/onboarding/confirm', 'POST', {
+                ...candidate.endpoint,
+                token: candidate.token,
+                confirmed: true,
+            });
+            if (sequence !== wizardState.sequence) return;
+            if (!wizardSameEndpoint(candidate.endpoint, wizardReadAddress())) {
+                wizardInvalidateCandidate();
+                return;
+            }
+            wizardState.trustSatisfied = true;
+            wizardState.trustNotice = '';
+            wizardSetStep(3);
+        } catch (error) {
+            if (sequence !== wizardState.sequence) return;
+            wizardState.trustSatisfied = false;
+            wizardShowError('wizardInspectError',
+                _('wizard_error_confirm') + ' ' + _('wizard_trust_expired'));
+        } finally {
+            if (sequence === wizardState.sequence) {
+                wizardState.busy = false;
+                button.disabled = false;
+                wizardSyncTrustButton();
+            }
+        }
+    }
+
+    function wizardUseAuth(method) {
+        wizardState.authMethod = method === 'key' ? 'key' : 'password';
+        const password = wizardState.authMethod === 'password';
+        const passwordTab = wizardEl('wizardPasswordTab');
+        const keyTab = wizardEl('wizardKeyTab');
+        passwordTab.classList.toggle('active', password);
+        keyTab.classList.toggle('active', !password);
+        passwordTab.setAttribute('aria-selected', password ? 'true' : 'false');
+        keyTab.setAttribute('aria-selected', password ? 'false' : 'true');
+        wizardEl('wizardPasswordPanel').hidden = !password;
+        wizardEl('wizardKeyPanel').hidden = password;
+    }
+
+    function wizardValidateCredentials() {
+        wizardClearError('wizardCredentialsError');
+        if (!wizardEl('wizardUser').value.trim()) {
+            wizardShowError('wizardCredentialsError', _('wizard_error_user'));
+            wizardEl('wizardUser').focus();
+            return false;
+        }
+        if (wizardState.authMethod === 'password') {
+            if (!wizardEl('wizardPassword').value) {
+                wizardShowError('wizardCredentialsError', _('wizard_error_credential'));
+                wizardEl('wizardPassword').focus();
+                return false;
+            }
+        } else if (!wizardEl('wizardKey').value.trim()) {
+            wizardShowError('wizardCredentialsError', _('wizard_error_credential'));
+            wizardEl('wizardKey').focus();
+            return false;
+        }
+        return true;
+    }
+
+    function wizardReview() {
+        if (wizardState.busy) return;
+        if (!wizardState.trustSatisfied || !wizardState.candidate) {
+            wizardShowError('wizardCredentialsError', _('wizard_error_trust_required'));
+            wizardSetStep(2);
+            return;
+        }
+        if (!wizardValidateCredentials()) return;
+        const endpoint = wizardReadAddress();
+        wizardEl('wizardSummaryHost').textContent = endpoint.host;
+        wizardEl('wizardSummaryPort').textContent = String(endpoint.ssh_port);
+        wizardEl('wizardSummaryUser').textContent = wizardEl('wizardUser').value.trim();
+        wizardEl('wizardSummaryAuth').textContent = wizardState.authMethod === 'password'
+            ? _('ssh_password') : _('ssh_key');
+        wizardEl('wizardSummaryTrust').textContent = _('ssh_trust_trusted');
+        wizardClearError('wizardConnectError');
+        wizardEl('wizardConnectPanel').hidden = false;
+        wizardEl('wizardSuccess').hidden = true;
+        wizardSetStep(4);
+    }
+
+    function wizardClassifyAddError(error) {
+        const payload = error && error.payload;
+        if (payload && typeof payload.error_code === 'string' && payload.error_code) {
+            return payload.error_code;
+        }
+        // fetch() rejects with TypeError when the network request itself fails
+        // (offline, DNS, proxy). The backend never supplied a payload then.
+        if (error instanceof TypeError) {
+            const message = String(error.message || '').toLowerCase();
+            if (message.includes('fetch') || message.includes('network') || message.includes('load failed')) {
+                return 'network_error';
+            }
+        }
+        return 'internal_error';
+    }
+
+    async function wizardConnect() {
+        if (wizardState.busy) return;
+        if (!wizardState.trustSatisfied || !wizardState.candidate) {
+            wizardShowError('wizardCredentialsError', _('wizard_error_trust_required'));
+            wizardSetStep(2);
+            return;
+        }
+        const endpoint = wizardReadAddress();
+        if (!wizardSameEndpoint(endpoint, wizardState.candidate.endpoint)) {
+            wizardInvalidateCandidate();
+            return;
+        }
+        if (!wizardValidateCredentials()) {
+            wizardSetStep(3);
+            return;
+        }
+
+        const body = {
+            name: wizardEl('wizardName').value.trim(),
+            host: endpoint.host,
+            ssh_port: endpoint.ssh_port,
+            username: wizardEl('wizardUser').value.trim(),
+        };
+        if (wizardState.authMethod === 'password') {
+            body.password = wizardEl('wizardPassword').value;
+        } else {
+            body.private_key = wizardEl('wizardKey').value;
+        }
+
+        const sequence = wizardState.sequence;
+        const button = wizardEl('wizardConnectBtn');
+        wizardState.busy = true;
+        button.disabled = true;
+        button.textContent = _('wizard_connecting');
+        wizardClearError('wizardConnectError');
+        wizardClearError('wizardCredentialsError');
+        try {
+            const result = await apiCall('/api/servers/add', 'POST', body);
+            if (sequence !== wizardState.sequence) return;
+            if (!result || !Number.isInteger(result.server_id)) {
+                throw new Error(_('wizard_error_add'));
+            }
+            wizardClearCredentials();
+            wizardEl('wizardOpenServer').href = '/server/' + result.server_id;
+            wizardEl('wizardConnectPanel').hidden = true;
+            wizardEl('wizardSuccess').hidden = false;
+            wizardEl('wizardSuccess').focus({ preventScroll: true });
+        } catch (error) {
+            if (sequence !== wizardState.sequence) return;
+            const code = wizardClassifyAddError(error);
+            if (code === 'authentication_failed') {
+                // Do not invalidate trust or re-run inspect/confirm: only the
+                // credentials need to be corrected.
+                wizardClearError('wizardConnectError');
+                wizardShowError('wizardCredentialsError', _('wizard_error_auth'));
+                wizardSetStep(3);
+            } else if (code === 'host_key_unknown' || code === 'host_key_changed') {
+                const notice = code === 'host_key_unknown'
+                    ? _('wizard_error_host_key_unknown')
+                    : _('wizard_error_host_key_changed');
+                wizardInvalidateCandidate();
+                wizardState.trustNotice = notice;
+                wizardClearError('wizardCredentialsError');
+                wizardClearError('wizardConnectError');
+                wizardSetStep(2);
+                wizardShowError('wizardInspectError', notice);
+                // Re-inspect so the operator sees the current fingerprint.
+                // Never confirm or trust it automatically.
+                wizardRunInspect();
+            } else if (code === 'network_error') {
+                wizardClearError('wizardCredentialsError');
+                wizardShowError('wizardConnectError', _('wizard_error_network'));
+                wizardSetStep(4);
+            } else {
+                wizardClearError('wizardCredentialsError');
+                wizardShowError('wizardConnectError', _('wizard_error_server_add_generic'));
+                wizardSetStep(4);
+            }
+        } finally {
+            // Always restore the result-step button, even when the request was
+            // invalidated by a host-key rejection and the sequence moved on.
+            wizardRestoreConnectButton();
+            if (sequence === wizardState.sequence) {
+                wizardState.busy = false;
+            }
+        }
+    }
+
+    function wizardCopyHostKeyCommand() {
+        const command = wizardEl('wizardHostKeyCommand').textContent.trim();
+        copyToClipboard(command);
+    }
+
+    function wizardFormSubmit(event) {
+        event.preventDefault();
+        if (wizardState.step === 1) wizardAddressNext();
+        else if (wizardState.step === 3) wizardReview();
+        else if (wizardState.step === 4 && wizardEl('wizardSuccess').hidden) wizardConnect();
+        return false;
+    }
+
+    wizardEl('wizardHost').addEventListener('input', wizardInvalidateCandidate);
+    wizardEl('wizardPort').addEventListener('input', wizardInvalidateCandidate);
+    // These ids intentionally match handler names; attaching directly avoids
+    // the HTML named-element binding shadowing the function inside inline
+    // onclick scopes.
+    wizardEl('wizardAddressNext').addEventListener('click', wizardAddressNext);
+    wizardEl('wizardTrustContinue').addEventListener('click', wizardTrustContinue);
+    window.addEventListener('pagehide', wizardClearCredentials);
+</script>
+{% endblock %}
