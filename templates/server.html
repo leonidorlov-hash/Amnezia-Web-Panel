@@ -2327,6 +2327,11 @@
         const clone = baseCard.cloneNode(true);
         replaceIdsRecursive(clone, baseKey, key);
         clone.id = `proto-${key}`;
+        const clonedInfo = clone.querySelector('.protocol-info');
+        if (clonedInfo) {
+            clonedInfo.innerHTML = '';
+            if (clonedInfo.parentElement) clonedInfo.parentElement.classList.add('hidden');
+        }
         const nameEl = clone.querySelector('.protocol-name');
         if (nameEl) nameEl.textContent = getProtoTitle(proto);
         const installBtn = clone.querySelector(`[id$="-install-btn"]`);
@@ -2361,6 +2366,14 @@
         // Some service cards may not exist in the template (e.g. on older builds);
         // skip quietly rather than throwing so a partial UI still renders.
         if (!statusEl || !actionsEl) return;
+
+        // A cloned multi-instance card starts as a copy of the base card, and a
+        // stopped container keeps whatever was rendered before. Reset first so
+        // stale counters from another instance/state never remain visible.
+        if (infoEl && infoGrid) {
+            infoGrid.innerHTML = '';
+            infoEl.classList.add('hidden');
+        }
 
         const isService = SERVICE_PROTOS.includes(protoBase(proto));
 

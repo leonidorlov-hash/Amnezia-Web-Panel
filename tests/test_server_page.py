@@ -432,5 +432,52 @@ class SmartRouteReadmeI18nTests(unittest.TestCase):
         self.assertIn('СОРМ', ru['smartroute_doc_risk_5'])
         self.assertIn('split-tunneling', ru['smartroute_doc_security_2'])
 
+class ProtocolCardStaleInfoTests(unittest.TestCase):
+    """Regression tests for cloned/stopped protocol cards inheriting stale
+    connection counters from the base card (AWP-PROTO-CARD-STALE)."""
+
+    def setUp(self):
+        self.page = read('templates', 'server.html')
+
+    def _function_body(self, name):
+        """Return the body of a top-level JS function from server.html."""
+        sig = f'function {name}('
+        start = self.page.index(sig)
+        # Find the next top-level function declaration at the same indentation.
+        next_fn = re.search(r'\n    (?:async )?function ', self.page[start + 1:])
+        if not next_fn:
+            raise ValueError(f'Could not locate end of function {name}')
+        return self.page[start:start + next_fn.start()]
+
+    def test_info_is_reset_before_state_branches(self):
+        body = self._function_body('updateProtocolCard')
+        reset_grid = body.find("infoGrid.innerHTML = '';")
+        reset_hidden = body.find("infoEl.classList.add('hidden');")
+        running_branch = body.find('if (info.container_running) {')
+        self.assertGreater(reset_grid, -1, 'infoGrid reset missing')
+        self.assertGreater(reset_hidden, -1, 'infoEl hidden missing')
+        self.assertLess(reset_grid, running_branch,
+                        'infoGrid reset must come before the running branch')
+        self.assertLess(reset_hidden, running_branch,
+                        'infoEl hidden must come before the running branch')
+
+    def test_cloned_instance_does_not_inherit_info(self):
+        body = self._function_body('ensureProtocolCard')
+        self.assertIn("clone.querySelector('.protocol-info')", body)
+        self.assertIn("clonedInfo.innerHTML = '';", body)
+        self.assertIn("clonedInfo.parentElement.classList.add('hidden');", body)
+
+    def test_stopped_branch_does_not_repopulate_info(self):
+        body = self._function_body('updateProtocolCard')
+        stopped_start = body.find('} else if (info.container_exists) {')
+        not_installed_start = body.find('} else {', stopped_start)
+        self.assertGreater(stopped_start, -1, 'stopped branch missing')
+        self.assertGreater(not_installed_start, stopped_start,
+                           'not-installed branch missing after stopped branch')
+        stopped_slice = body[stopped_start:not_installed_start]
+        self.assertNotIn('infoGrid.innerHTML =', stopped_slice,
+                         'stopped branch must not write into the info grid')
+
+
 if __name__ == '__main__':
     unittest.main()
