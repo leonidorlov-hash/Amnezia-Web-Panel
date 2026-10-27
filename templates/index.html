@@ -56,6 +56,8 @@
                 {% endif %}
             </div>
 
+            <div id="rkn-alert-{{ loop.index0 }}" class="rkn-scan-alert" style="display:none; margin-top:8px;"></div>
+
             <div class="server-actions">
                 <span class="reorder-btns">
                     <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="moveServer({{ loop.index0 }}, -1)"

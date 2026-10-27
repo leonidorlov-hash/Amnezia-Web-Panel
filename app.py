@@ -25,7 +25,7 @@ import socket
 import struct
 import zlib
 import ipaddress
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import io
 from fastapi.responses import (JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse,
                                FileResponse, PlainTextResponse)
@@ -2774,8 +2774,11 @@ def _conn_monitor_loop():
                 for proto in list(protocols):
                     if protocol_base(proto) not in ('awg', 'awg2', 'awg3'):
                         continue
+                    info = protocols[proto] or {}
                     try:
-                        AWGManager(get_ssh(server)).collect_conn_stats(proto)
+                        AWGManager(get_ssh(server)).collect_conn_stats(
+                            proto, port=info.get('port'),
+                            public_port=info.get('public_port'))
                     except Exception as e:
                         logger.warning(
                             f"conn monitor: {server.get('host')} {proto}: {e}")

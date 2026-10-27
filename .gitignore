@@ -38,3 +38,12 @@ data.json
 .idea/
 .worktrees/
 docs/
+
+# Local clone of separate private repo (leonidorlov-hash/amnezia-blocker)
+blocker-repo/
+
+# Local clone of separate private repo (leonidorlov-hash/panele4ka-handoff)
+handoff-repo/
+
+# Local SSH keys — never commit
+.keys/

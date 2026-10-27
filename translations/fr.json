@@ -783,6 +783,7 @@
     "ssh_trust_new": "Clé proposée",
     "ssh_trust_old": "Anciennes clés approuvées",
     "ssh_trust_error": "Échec de vérification SSH",
+    "sim_alert_text": "⛔ Partage de clé CONFIRMÉ : vers le {date} à {time}, la même clé a transféré des données depuis {ips} ({sessions} sessions) en même temps !",
     "ssh_onboarding_hint": "Clé SSH inconnue ou modifiée ? Inspectez-la ici avant la connexion. Aucun identifiant SSH n’est envoyé.",
     "ssh_onboarding_saved": "Clé hôte enregistrée. L’authentification SSH n’a pas été testée. Utilisez Connexion / Enregistrer pour vérifier les identifiants et terminer.",
     "smartroute_desc": "Le trafic RU part en direct, le reste passe par le nœud de sortie — routage partagé par listes de préfixes RU.",
