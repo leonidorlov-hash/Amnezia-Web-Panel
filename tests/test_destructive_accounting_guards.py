@@ -47,9 +47,46 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
         self.ssh.assert_not_called()
         self.assertEqual(self.exit.mock_calls, [])
 
-    async def test_raw_remove_cannot_drop_accounting(self):
-        req = panel.ConnectionActionRequest(protocol='awg3', client_id='peer')
-        self.rejected(await panel.api_remove_connection(self.request, 0, req))
+    def finalized(self, result, saved_data=None, expect_delta=2):
+        status = result.status_code if hasattr(result, 'status_code') else 200
+        self.assertEqual(status, 200, getattr(result, 'body', result))
+        body = json.loads(result.body) if hasattr(result, 'body') else result
+        self.assertTrue(body.get('finalized'))
+        self.assertIn('accounting', body)
+        if saved_data is not None:
+            self.assertEqual(saved_data['users'][0]['traffic_total'], 700 + expect_delta)
+            self.assertEqual(len(saved_data['user_connections']), 0)
+            self.assertEqual(len(saved_data.get('accounting_recoveries', [])), 1)
+
+    async def test_raw_remove_finalizes_accounting(self):
+        ssh = Mock()
+        saved = []
+        def fake_commit(data_file, operation_id, actor, kind, intent, before, after):
+            saved.append(copy.deepcopy(after))
+            return {'status': 'success', 'operation_id': 'op', 'replayed': False,
+                    'counters_verified_final': False}
+        with patch.object(panel, 'get_ssh', return_value=ssh), \
+             patch.object(panel, 'get_protocol_manager', return_value=Mock()), \
+             patch.object(panel, '_manager_call', return_value=True), \
+             patch.object(panel, 'read_peer_state', return_value=(12, True)), \
+             patch.object(panel, 'commit_finalize', side_effect=fake_commit):
+            req = panel.ConnectionActionRequest(protocol='awg3', client_id='peer')
+            result = await panel.api_remove_connection(self.request, 0, req)
+        self.finalized(result, saved[-1] if saved else None)
+
+    async def test_remove_unknown_counter_requires_explicit_confirmation(self):
+        with patch.object(panel, 'get_ssh', return_value=Mock()), \
+             patch.object(panel, 'get_protocol_manager', return_value=Mock()), \
+             patch.object(panel, '_manager_call') as remote, \
+             patch.object(panel, 'read_peer_state', return_value=(None, False)), \
+             patch.object(panel, 'commit_finalize') as commit:
+            result = await panel.api_remove_connection(
+                self.request, 0, panel.ConnectionActionRequest(protocol='awg3', client_id='peer'))
+        self.assertEqual(result.status_code, 409)
+        self.assertEqual(json.loads(result.body)['code'], 'final_counter_read_failed')
+        self.assertTrue(json.loads(result.body)['can_force'])
+        remote.assert_not_called()
+        commit.assert_not_called()
 
     async def test_server_delete_and_clear_are_guarded_before_exit_cleanup(self):
         for name in ('api_delete_server', 'api_clear_server'):
@@ -67,7 +104,7 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
         self.rejected(await panel.api_protocol_backup_restore(self.request, 0, req))
 
     async def test_panel_restore_cannot_remove_owner_or_rewind_baselines(self):
-        for data in ({'servers': [], 'users': []}, self.data):
+        for data in ({'servers': [], 'users': []}, dict(self.data, user_connections=[])):
             with self.subTest(data=data):
                 file = UploadFile(filename='backup.json', file=io.BytesIO(json.dumps(data).encode()))
                 self.rejected(await panel.api_backup_restore(self.request, file))
@@ -92,12 +129,23 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.data, before)
         self.ssh.assert_not_called()
 
-    async def test_guard_applies_to_disabled_unlimited_and_dangling_user(self):
+    async def test_disabled_unlimited_and_dangling_user_still_finalized(self):
+        ssh = Mock()
+        def fake_commit(*args, **kwargs):
+            return {'status': 'success', 'operation_id': 'op', 'replayed': False,
+                    'counters_verified_final': False}
         for value in ({'enabled': False}, {'traffic_limit': 0}, {'id': 'different-user'}):
             with self.subTest(value=value):
+                self.data = state()
                 self.data['users'][0].update(value)
-                self.rejected(await panel.api_remove_connection(
-                    self.request, 0, panel.ConnectionActionRequest(protocol='awg3', client_id='peer')))
+                with patch.object(panel, 'get_ssh', return_value=ssh), \
+                     patch.object(panel, 'get_protocol_manager', return_value=Mock()), \
+                     patch.object(panel, '_manager_call', return_value=True), \
+                     patch.object(panel, 'read_peer_state', return_value=(12, True)), \
+                     patch.object(panel, 'commit_finalize', side_effect=fake_commit):
+                    result = await panel.api_remove_connection(
+                        self.request, 0, panel.ConnectionActionRequest(protocol='awg3', client_id='peer'))
+                self.assertEqual(result.status_code if hasattr(result, 'status_code') else 200, 200, getattr(result, 'body', result))
 
     async def test_unlinked_peer_on_same_server_remains_removable(self):
         ssh = Mock()
@@ -106,19 +154,19 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
              patch.object(panel, '_manager_call', return_value=True) as call:
             result = await panel.api_remove_connection(self.request, 0,
                 panel.ConnectionActionRequest(protocol='awg3', client_id='unowned'))
-        self.assertEqual(result, {'status': 'success'})
+        self.assertEqual(result, {'status': 'success', 'finalized': False})
         self.assertEqual(call.call_args.args[1:], ('remove_client', 'awg3', 'unowned'))
         self.save.assert_not_called()
         self.assertEqual(self.data['user_connections'], state()['user_connections'])
 
-    async def test_same_client_key_in_other_protocol_keeps_ownership(self):
+    async def test_same_client_key_in_other_protocol_is_unowned(self):
         ssh = Mock()
         with patch.object(panel, 'get_ssh', return_value=ssh), \
              patch.object(panel, 'get_protocol_manager', return_value=Mock()), \
              patch.object(panel, '_manager_call', return_value=True):
             result = await panel.api_remove_connection(self.request, 0,
                 panel.ConnectionActionRequest(protocol='awg2', client_id='peer'))
-        self.assertEqual(result, {'status': 'success'})
+        self.assertEqual(result, {'status': 'success', 'finalized': False})
         self.save.assert_not_called()
         self.assertEqual(self.data['user_connections'], state()['user_connections'])
 
@@ -132,11 +180,22 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
             panel.ConnectionActionRequest(protocol='awg3', client_id='peer'))).status_code, 404)
         self.ssh.assert_not_called()
 
-    async def test_same_container_protocol_alias_cannot_bypass_guard(self):
+    async def test_same_container_protocol_alias_finalizes_not_bypasses(self):
+        ssh = Mock()
+        def fake_commit(*args, **kwargs):
+            return {'status': 'success', 'operation_id': 'op', 'replayed': False,
+                    'counters_verified_final': False}
         for protocol in ('awg3__1', 'awg3__0', 'awg3__bad'):
             with self.subTest(protocol=protocol):
-                self.rejected(await panel.api_remove_connection(self.request, 0,
-                    panel.ConnectionActionRequest(protocol=protocol, client_id='peer')))
+                self.data = state()
+                with patch.object(panel, 'get_ssh', return_value=ssh), \
+                     patch.object(panel, 'get_protocol_manager', return_value=Mock()), \
+                     patch.object(panel, '_manager_call', return_value=True), \
+                     patch.object(panel, 'read_peer_state', return_value=(12, True)), \
+                     patch.object(panel, 'commit_finalize', side_effect=fake_commit):
+                    result = await panel.api_remove_connection(self.request, 0,
+                        panel.ConnectionActionRequest(protocol=protocol, client_id='peer'))
+                self.assertEqual(result.status_code if hasattr(result, 'status_code') else 200, 200, getattr(result, 'body', result))
 
     async def test_self_service_delete_cannot_drop_baselines(self):
         data = fixtures.base_data()
@@ -160,7 +219,7 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
         self.save.assert_not_called()
         self.assertIn(FINALIZATION_MESSAGE, html.unescape(api.edit_message.call_args.args[2]))
 
-    async def test_concurrent_link_cannot_be_bypassed_by_raw_remove(self):
+    async def test_concurrent_link_is_finalized_by_remove(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
         def manager_call(manager, method, *args, **kwargs):
@@ -170,7 +229,11 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
                 if not release.wait(5):
                     raise TimeoutError('test barrier')
                 return 'synthetic config'
-            raise AssertionError('linked peer must not be removed')
+            if method == 'remove_client':
+                return True
+            if method == 'read_peer_state':
+                return (12, True)
+            raise AssertionError(f'unexpected manager call: {method}')
         def save(data):
             self.data = copy.deepcopy(data)
         with patch.object(panel, 'get_ssh', return_value=Mock()), \
@@ -178,6 +241,7 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
              patch.object(panel, 'protocol_public_endpoint', return_value=('192.0.2.1', None)), \
              patch.object(panel, 'config_payloads', return_value={}), \
              patch.object(panel, '_manager_call', side_effect=manager_call), \
+             patch.object(panel, 'read_peer_state', side_effect=lambda *a, **k: (12, True)), \
              patch.object(panel, 'save_data', side_effect=save):
             add = asyncio.create_task(panel.api_add_user_connection(self.request, 'u',
                 panel.AddUserConnectionRequest(server_id=0, protocol='awg3', client_id='unowned')))
@@ -196,8 +260,9 @@ class DestructiveAccountingGuards(unittest.IsolatedAsyncioTestCase):
             release.set()
             self.assertEqual((await add)['status'], 'success')
             result = await removal
-        self.assertEqual(result.status_code, 409)
-        self.assertEqual(calls, ['get_client_config'])
+        self.assertEqual(result.status_code if hasattr(result, 'status_code') else 200, 200)
+        self.assertIn('get_client_config', calls)
+        self.assertIn('remove_client', calls)
         self.assertEqual(self.data['users'][0]['traffic_used'], 451)
 
 

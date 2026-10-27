@@ -721,6 +721,7 @@
   "rkn_block_recent": "Recent events",
   "rkn_block_sets": "sets",
   "rkn_block_sets_empty": "sets are empty — update failed",
+  "rkn_block_not_ready": "Installed, but not active - check the lists and iptables rules",
   "rkn_block_clear": "Clear scan statistics",
   "rkn_block_clear_confirm": "Clear the scan log on the server? The red button disappears until the next scans.",
   "rkn_block_cleared": "Scan statistics cleared",
@@ -771,6 +772,9 @@
   "public_endpoint_port_docker": "The port is held by your own Docker — safe to publish",
   "public_endpoint_port_busy": "Port is busy:",
   "public_endpoint_port_invalid": "Enter a port number (1-65535).",
+    "ssh_trust_button": "SSH key",
+    "ssh_trust_button_urgent": "Check SSH key urgently",
+    "ssh_trust_button_changed": "SSH key changed!",
     "ssh_trust_title": "SSH host key",
     "ssh_trust_warning": "Verify the fingerprint independently using the server/provider console (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub). A changed key may indicate an attack. Never trust a key only because this page shows it.",
     "ssh_trust_inspect": "Inspect SSH key",
@@ -921,5 +925,8 @@
     "smartroute_doc_fit_ok": "Fits: you need lower latency or access to RU services that reject foreign IPs, and your threat model does not include hiding the fact of VPN use from the hoster or the state.",
     "smartroute_doc_fit_no": "Does not fit: you need anonymity from the ISP or state, or protection against traffic correlation and IP blocking. Use the full tunnel through the exit node instead.",
     "smartroute_doc_fail_title": "If something breaks.",
-    "smartroute_doc_fail": "If the exit node becomes unreachable, RU traffic keeps going directly while the rest stops. When Smart Route is disabled, the instance automatically returns to the full tunnel through the exit."
+    "smartroute_doc_fail": "If the exit node becomes unreachable, RU traffic keeps going directly while the rest stops. When Smart Route is disabled, the instance automatically returns to the full tunnel through the exit.",
+    "delete_unverified_confirm": "Could not read the final traffic counter. Delete without accounting for the last bytes?",
+    "unlink_stop_and_unlink_confirm": "Peer is active. Stop it and unlink?",
+    "unlink_unverified_confirm": "Could not read the final traffic counter. Unlink without accounting for the last bytes?"
 }

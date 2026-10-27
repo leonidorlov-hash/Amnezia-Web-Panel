@@ -721,6 +721,7 @@
   "rkn_block_recent": "最近事件",
   "rkn_block_sets": "集合",
   "rkn_block_sets_empty": "集合为空 — update 未运行",
+  "rkn_block_not_ready": "已安装但未激活——请检查列表和 iptables 规则",
   "rkn_block_clear": "清除扫描统计",
   "rkn_block_clear_confirm": "清除服务器上的扫描日志？",
   "rkn_block_cleared": "扫描统计已清除",
@@ -771,6 +772,9 @@
   "public_endpoint_port_docker": "该端口由您自己的 Docker 占用——可以发布",
   "public_endpoint_port_busy": "端口已被占用：",
   "public_endpoint_port_invalid": "请输入端口号（1-65535）。",
+    "ssh_trust_button": "SSH 密钥",
+    "ssh_trust_button_urgent": "请立即检查 SSH 密钥",
+    "ssh_trust_button_changed": "SSH 密钥已更改！",
     "ssh_trust_title": "SSH 主机密钥",
     "ssh_trust_warning": "请通过服务器或提供商控制台独立核对指纹（ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub）。密钥变更可能意味着攻击。不要仅因为此页面显示密钥就信任它。",
     "ssh_trust_inspect": "检查 SSH 密钥",
@@ -921,5 +925,8 @@
     "smartroute_doc_fit_ok": "适用：需要更低延迟，或访问拒绝境外 IP 的俄罗斯服务，且威胁模型不包含向主机商或国家隐藏 VPN 使用事实。",
     "smartroute_doc_fit_no": "不适用：需要对运营商或国家保持匿名，或需要防止流量关联和 IP 封锁。此时请使用经出口节点的完整隧道。",
     "smartroute_doc_fail_title": "发生故障时。",
-    "smartroute_doc_fail": "如果出口节点不可达，俄罗斯流量会继续直连，其余流量会中断。关闭 Smart Route 后，实例会自动恢复为经出口节点的完整隧道。"
+    "smartroute_doc_fail": "如果出口节点不可达，俄罗斯流量会继续直连，其余流量会中断。关闭 Smart Route 后，实例会自动恢复为经出口节点的完整隧道。",
+    "delete_unverified_confirm": "无法读取最终流量计数器。是否删除且不统计最后几个字节?",
+    "unlink_stop_and_unlink_confirm": "节点处于活动状态。停止并解除关联?",
+    "unlink_unverified_confirm": "无法读取最终流量计数器。是否解除关联且不统计最后几个字节?"
 }

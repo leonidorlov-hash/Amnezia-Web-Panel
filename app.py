@@ -207,7 +207,7 @@ DATA_FILE = os.path.abspath(os.path.expanduser(
     os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
 ))
 ssh_trust.configure(DATA_FILE)
-CURRENT_VERSION = "v1.8.0"
+CURRENT_VERSION = "v1.8.2"
 
 # Custom protocol instance names: the rename modal caps input at 64 chars.
 CUSTOM_PROTOCOL_NAME_MAX = 64
@@ -268,6 +268,15 @@ from peer_accounting import guard_user_deletions
 from peer_recovery import (RecoveryStore, RecoveryError, PanelLease, STATE_FILE_LOCK,
                            GENERATION, digest as recovery_digest, orphan_scope, validate_backup)
 from peer_recovery import verify_awg_peer_absent, check_create_journal, require_repair_target, DISASTER_HOLD
+from peer_finalization import (
+    FinalizationError,
+    connection_scope,
+    find_connection,
+    read_peer_state,
+    finalize_connection_record,
+    commit_finalize,
+    make_intent,
+)
 
 peer_lifecycle_lock.configure(DATA_FILE)
 _panel_lease = None
@@ -2504,6 +2513,7 @@ class EditConnectionRequest(BaseModel):
 class ConnectionActionRequest(BaseModel):
     protocol: str = 'awg'
     client_id: str = ''
+    allow_unverified: bool = False
 
 
 class RenameConnectionRequest(BaseModel):
@@ -2842,7 +2852,7 @@ async def startup():
             
         if migrated:
             changed = True
-            logger.info(f"Migrated user {u['username']} to new traffic/sharing fields")
+            logger.info(f"Migrated user {u.get('username', u.get('id', '?'))} to new traffic/sharing fields")
     
     # API tokens collection — initialise lazily on first run.
     if 'api_tokens' not in data:
@@ -3227,7 +3237,7 @@ def api_login(request: Request, req: LoginRequest):
 
     for u in data.get('users', []):
         # Users without a password (role 'none', record-only) can never log in.
-        if u['username'] == req.username and u.get('password_hash') and verify_password(req.password, u['password_hash']):
+        if u.get('username') == req.username and u.get('password_hash') and verify_password(req.password, u['password_hash']):
             lang = request.cookies.get('lang', 'ru')
             if u.get('role') == 'none':
                 # Record-only account: even a password set later does not
@@ -3363,6 +3373,21 @@ def api_ssh_trust_inspect(request: Request, server_id: int, server_uid: Optional
         return JSONResponse({'error': 'Inventory changed; refresh and retry'}, status_code=409)
     try:
         return ssh_trust.inspect(servers[server_id])
+    except Exception as exc:
+        return JSONResponse({'error': str(exc)}, status_code=409)
+
+
+@app.get('/api/servers/{server_id}/ssh-trust/status', tags=["Servers"])
+def api_ssh_trust_status(request: Request, server_id: int, server_uid: Optional[str] = None):
+    if not _ssh_trust_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    servers = load_data()['servers']
+    if not 0 <= server_id < len(servers):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    if server_uid is not None and servers[server_id].get('uid') != server_uid:
+        return JSONResponse({'error': 'Inventory changed; refresh and retry'}, status_code=409)
+    try:
+        return {'status': ssh_trust.saved_status(servers[server_id])}
     except Exception as exc:
         return JSONResponse({'error': str(exc)}, status_code=409)
 
@@ -3961,6 +3986,50 @@ def _rkn_record(server):
     return server.get('rknblock') or {}
 
 
+def _rkn_server_index(data, server_id, server_uid):
+    """Resolve a server after a long SSH call: uid survives reorder/delete,
+    the positional index is only a fallback for legacy records."""
+    if server_uid:
+        for idx, srv in enumerate(data.get('servers', [])):
+            if srv.get('uid') == server_uid:
+                return idx
+    if isinstance(server_id, int) and 0 <= server_id < len(data.get('servers', [])):
+        return server_id
+    return None
+
+
+async def _rkn_store_record(server_id, server_uid, mutate):
+    """Reload under DATA_LOCK after SSH and persist only the RKN record.
+
+    RKN install/enable/options take seconds and the old code saved a whole
+    data.json snapshot loaded before the SSH call. A background traffic save
+    or another admin action could then overwrite the new record with a stale
+    snapshot, leaving the card at "not installed" right after a successful
+    install.
+    """
+    async with DATA_LOCK:
+        data = load_data()
+        idx = _rkn_server_index(data, server_id, server_uid)
+        if idx is None:
+            return None
+        rec = dict(data['servers'][idx].get('rknblock') or {})
+        mutate(rec)
+        data['servers'][idx]['rknblock'] = rec
+        save_data(data)
+        return rec
+
+
+async def _rkn_drop_record(server_id, server_uid):
+    async with DATA_LOCK:
+        data = load_data()
+        idx = _rkn_server_index(data, server_id, server_uid)
+        if idx is None:
+            return False
+        data['servers'][idx].pop('rknblock', None)
+        save_data(data)
+        return True
+
+
 async def _rkn_ssh_run(server, cmd, timeout):
     ssh = await asyncio.to_thread(get_ssh, server)
     await asyncio.to_thread(ssh.connect)
@@ -3986,15 +4055,20 @@ async def api_rknblock_install(request: Request, server_id: int):
     if server_id >= len(data['servers']):
         return JSONResponse({'error': 'Server not found'}, status_code=404)
     server = data['servers'][server_id]
+    server_uid = server.get('uid')
     err = await _rkn_ssh_run(server, RKN_INSTALL_CMD, 420)
     if err is not None:
         return err
-    rec = dict(_rkn_record(server))
-    rec['installed'] = True
-    rec['enabled'] = True
-    server['rknblock'] = rec
-    save_data(data)
-    RKN_FLAG_CACHE.pop(server_id, None)
+
+    def mark(rec):
+        rec['installed'] = True
+        rec['enabled'] = True
+        rec['last_error'] = None
+
+    rec = await _rkn_store_record(server_id, server_uid, mark)
+    if rec is None:
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    RKN_FLAG_CACHE.clear()
     return {'status': 'success', 'installed': True, 'enabled': True}
 
 
@@ -4007,12 +4081,13 @@ async def api_rknblock_uninstall(request: Request, server_id: int):
     if server_id >= len(data['servers']):
         return JSONResponse({'error': 'Server not found'}, status_code=404)
     server = data['servers'][server_id]
+    server_uid = server.get('uid')
     err = await _rkn_ssh_run(server, _rkn_run_cmd('uninstall'), 180)
     if err is not None:
         return err
-    server.pop('rknblock', None)
-    save_data(data)
-    RKN_FLAG_CACHE.pop(server_id, None)
+    if not await _rkn_drop_record(server_id, server_uid):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    RKN_FLAG_CACHE.clear()
     return {'status': 'success', 'installed': False}
 
 
@@ -4031,15 +4106,20 @@ async def api_rknblock_enable(request: Request, server_id: int, req: RknBlockEna
     server = data['servers'][server_id]
     if not _rkn_record(server).get('installed'):
         return JSONResponse({'error': 'App is not installed'}, status_code=409)
+    server_uid = server.get('uid')
     err = await _rkn_ssh_run(server, _rkn_run_cmd('on' if req.enabled else 'off'), 180)
     if err is not None:
         return err
-    rec = dict(_rkn_record(server))
-    rec['installed'] = True
-    rec['enabled'] = bool(req.enabled)
-    server['rknblock'] = rec
-    save_data(data)
-    RKN_FLAG_CACHE.pop(server_id, None)
+
+    def mark(rec):
+        rec['installed'] = True
+        rec['enabled'] = bool(req.enabled)
+        rec['last_error'] = None
+
+    rec = await _rkn_store_record(server_id, server_uid, mark)
+    if rec is None:
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    RKN_FLAG_CACHE.clear()
     return {'status': 'success', 'enabled': bool(req.enabled)}
 
 
@@ -4084,15 +4164,20 @@ async def api_rknblock_options(request: Request, server_id: int, req: RknBlockOp
         return JSONResponse({'error': 'App is not installed'}, status_code=409)
     values = req.model_dump()
     pairs = ' '.join(f'{k}={"on" if values[k] else "off"}' for k in RKN_OPTION_FLAGS)
+    server_uid = server.get('uid')
     err = await _rkn_ssh_run(server, _rkn_run_cmd(f'set {pairs}'), 120)
     if err is not None:
         return err
-    rec = dict(_rkn_record(server))
-    rec['installed'] = True
-    rec['flags'] = values
-    server['rknblock'] = rec
-    save_data(data)
-    RKN_FLAG_CACHE.pop(server_id, None)
+
+    def mark(rec):
+        rec['installed'] = True
+        rec['flags'] = values
+        rec['last_error'] = None
+
+    rec = await _rkn_store_record(server_id, server_uid, mark)
+    if rec is None:
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    RKN_FLAG_CACHE.clear()
     return {'status': 'success', 'flags': values}
 
 
@@ -4128,6 +4213,12 @@ def _parse_rkn_scan_output(out, flag_enabled):
     m = re.search(r'last_update:\s*(\S+)', status_part)
     if m and m.group(1) != '—':
         last_update = m.group(1)
+    # Новый статус печатает health: ok|failed после проверки наборов и правил.
+    # Старые версии строку не печатают; тогда здоровье определяется по sets.
+    health = None
+    m = re.search(r'health:\s*(\w+)', status_part)
+    if m:
+        health = m.group(1).lower()
     events = []
     for line in (log_part or '').splitlines():
         line = line.strip()
@@ -4161,9 +4252,21 @@ def _parse_rkn_scan_output(out, flag_enabled):
         except ValueError:
             pass
 
+    sets_ok = sets.get('in4', 0) > 0 and sets.get('out4', 0) > 0
+    problems = []
+    if agent_state != 'on':
+        problems.append('not_running')
+    if not sets_ok:
+        problems.append('lists_empty')
+    if health == 'failed':
+        problems.append('health_failed')
+
     return {
         'flag_enabled': bool(flag_enabled),
         'agent_state': agent_state,
+        'health': health,
+        'sets_ok': sets_ok,
+        'problems': problems,
         'sets': sets,
         'flags': flags,
         'last_update': last_update,
@@ -4204,8 +4307,14 @@ async def api_rkn_scans(request: Request, server_id: int):
     record = server.get('rknblock') or {}
     installed = bool(record.get('installed'))
     parsed = _parse_rkn_scan_output(out, installed)
+    live_on = parsed.get('agent_state') == 'on'
     parsed['installed'] = installed
     parsed['enabled'] = bool(record.get('enabled', True)) if installed else False
+    parsed['running'] = bool(installed and live_on)
+    parsed['healthy'] = bool(installed and live_on
+                             and parsed.get('sets_ok')
+                             and parsed.get('health') != 'failed')
+    parsed['last_error'] = record.get('last_error')
     return parsed
 
 
@@ -4258,12 +4367,19 @@ async def api_rkn_scan_flags(request: Request):
             return idx, cached['data']
         try:
             out = await _fetch_rkn_scan_output(srv)
-            parsed = _parse_rkn_scan_output(out, srv.get('rkn_block_enabled', False))
+            installed = bool((srv.get('rknblock') or {}).get('installed'))
+            parsed = _parse_rkn_scan_output(out, installed)
+            live_on = parsed.get('agent_state') == 'on'
             summary = {'agent_state': parsed['agent_state'],
+                       'running': bool(installed and live_on),
+                       'healthy': bool(installed and live_on
+                                       and parsed.get('sets_ok')
+                                       and parsed.get('health') != 'failed'),
+                       'problems': parsed.get('problems', []),
                        'events24': parsed['last_24h'],
                        'last': parsed['last_event'],
-                       'flag': parsed['flag_enabled'],
-                       'installed': parsed['flag_enabled'],
+                       'flag': bool(installed),
+                       'installed': bool(installed),
                        'sets': parsed['sets']}
         except Exception:
             summary = None
@@ -6317,27 +6433,88 @@ def api_add_connection(request: Request, server_id: int, req: AddConnectionReque
 
 @app.post('/api/servers/{server_id}/connections/remove', tags=["Connections"])
 @serialize_peer_lifecycle
-def api_remove_connection(request: Request, server_id: int, req: ConnectionActionRequest):
+async def api_remove_connection(request: Request, server_id: int, req: ConnectionActionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
         data = load_data()
         if server_id < 0 or server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
-        guard = _traffic_removal_guard(data, server_id=server_id, protocol=req.protocol, client_id=req.client_id)
-        if guard is not None:
-            return guard
         server = data['servers'][server_id]
         if not req.client_id:
             return JSONResponse({'error': 'Client ID is required'}, status_code=400)
-        ssh = get_ssh(server)
-        ssh.connect()
-        manager = get_protocol_manager(ssh, req.protocol)
-        _manager_call(manager, 'remove_client', req.protocol, req.client_id)
-        ssh.disconnect()
-        # The preflight proved this peer has no local owner. Do not save
-        # the pre-SSH JSON: unrelated traffic/access commits can occur meanwhile.
-        return {'status': 'success'}
+
+        try:
+            actor = str(get_current_user(request)['id'])
+        except Exception:
+            actor = 'admin'
+        operation_id = uuid.uuid4().hex
+
+        # An owned peer must be finalized; an unowned peer can be removed raw.
+        conn = find_connection(data, server_id, req.protocol, req.client_id)
+        if conn is None:
+            ssh = get_ssh(server)
+            await asyncio.to_thread(ssh.connect)
+            manager = get_protocol_manager(ssh, req.protocol)
+            await asyncio.to_thread(_manager_call, manager, 'remove_client',
+                                    req.protocol, req.client_id)
+            ssh.disconnect()
+            return {'status': 'success', 'finalized': False}
+
+        scope = connection_scope(conn, server)
+        kind = 'peer_remove'
+        intent = make_intent(scope, 'remove')
+
+        observed_bytes = None
+        quiescent = False
+        ssh = None
+        try:
+            ssh = get_ssh(server)
+            await asyncio.to_thread(ssh.connect)
+            manager = get_protocol_manager(ssh, req.protocol)
+            observed_bytes, quiescent = await asyncio.to_thread(
+                read_peer_state, manager, req.protocol, req.client_id)
+
+            if observed_bytes is None and not quiescent and not req.allow_unverified:
+                return JSONResponse({
+                    'error': 'Could not read the final traffic counter.',
+                    'code': 'final_counter_read_failed',
+                    'can_force': True,
+                }, status_code=409)
+
+            await asyncio.to_thread(_manager_call, manager, 'remove_client',
+                                    req.protocol, req.client_id)
+        except FinalizationError as exc:
+            return JSONResponse({'error': str(exc), 'code': exc.code,
+                                 'can_force': exc.can_force}, status_code=409)
+        except Exception as exc:
+            logger.exception("Error during peer removal SSH")
+            return JSONResponse({'error': str(exc), 'code': 'removal_ssh_failed'},
+                                status_code=502)
+        finally:
+            if ssh:
+                try:
+                    ssh.disconnect()
+                except Exception:
+                    pass
+
+        async with DATA_LOCK:
+            before = pathlib_read_data_bytes() if os.path.exists(DATA_FILE) else b''
+            data = load_data()
+            conn = find_connection(data, server_id, req.protocol, req.client_id)
+            if conn is None:
+                return JSONResponse({'error': 'Connection link disappeared during removal'},
+                                    status_code=409)
+            mode = 'delete_unverified' if observed_bytes is None else 'delete_finalized'
+            accounting = finalize_connection_record(
+                data, conn, server, observed_bytes, time.time(), mode,
+                operation_id, quiescent)
+            result = await asyncio.to_thread(
+                commit_finalize, DATA_FILE, operation_id, actor, kind, intent,
+                before, data)
+            result['accounting'] = accounting
+            result['finalized'] = True
+            return result
     except Exception as e:
         logger.exception("Error removing connection")
         return JSONResponse({'error': str(e)}, status_code=500)
@@ -6990,37 +7167,107 @@ class UnlinkConnectionRequest(BaseModel):
     server_id: int
     protocol: str = 'awg'
     client_id: str = ''
+    stop: bool = False
+    allow_unverified: bool = False
 
 
 @app.post('/api/users/{user_id}/connections/unlink', tags=["Users"])
 @serialize_peer_lifecycle
 async def api_unlink_user_connection(request: Request, user_id: str, req: UnlinkConnectionRequest):
-    """Retain the accounting owner until a peer can be safely finalized.
+    """Unlink a peer from its owner, finalizing accounting first.
 
-    An SSH read before unlink is not a final counter: the peer may continue
-    transferring, and a periodic scrape already in flight may still need this
-    connection's baseline. A disabled user flag is not proof of remote quiescence.
+    * Disabled/absent peers can be unlinked directly (no traffic is possible).
+    * Active peers require ``stop=True``; the endpoint disables the peer first.
+    * A failed final counter read returns 409 with ``can_force=True`` so the
+      UI can ask for explicit confirmation before ``allow_unverified=True``.
     """
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
+
+    try:
+        actor = str(get_current_user(request)['id'])
+    except Exception:
+        actor = 'admin'
+    operation_id = uuid.uuid4().hex
+
     async with DATA_LOCK:
         data = load_data()
-        guard = _traffic_removal_guard(data, server_id=req.server_id, protocol=req.protocol,
-                                      client_id=req.client_id, user_ids={user_id})
-        if guard is not None:
-            return guard
-        before = len(data.get('user_connections', []))
-        data['user_connections'] = [
-            c for c in data.get('user_connections', [])
-            if not (c.get('user_id') == user_id
-                    and c.get('server_id') == req.server_id
-                    and c.get('protocol') == req.protocol
-                    and c.get('client_id') == req.client_id)
-        ]
-        if len(data['user_connections']) == before:
+        if req.server_id < 0 or req.server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][req.server_id]
+        conn = find_connection(data, req.server_id, req.protocol, req.client_id,
+                               user_id=user_id)
+        if conn is None:
             return JSONResponse({'error': 'Connection link not found'}, status_code=404)
-        save_data(data)
-        return {'status': 'success'}
+        scope = connection_scope(conn, server)
+        kind = 'peer_unlink'
+        intent = make_intent(scope, 'unlink')
+
+    observed_bytes = None
+    quiescent = False
+    ssh = None
+    try:
+        ssh = get_ssh(server)
+        await asyncio.to_thread(ssh.connect)
+        manager = get_protocol_manager(ssh, req.protocol)
+        observed_bytes, quiescent = await asyncio.to_thread(
+            read_peer_state, manager, req.protocol, req.client_id)
+
+        if not quiescent and not req.stop:
+            return JSONResponse({
+                'error': 'Peer is active. Stop it first or use stop-and-unlink.',
+                'code': 'peer_active_stop_required',
+                'can_stop': True,
+            }, status_code=409)
+
+        if not quiescent and req.stop:
+            await asyncio.to_thread(_manager_call, manager, 'toggle_client',
+                                    req.protocol, req.client_id, False)
+            observed_bytes, quiescent = await asyncio.to_thread(
+                read_peer_state, manager, req.protocol, req.client_id)
+            if not quiescent:
+                return JSONResponse({
+                    'error': 'Peer could not be stopped; unlink aborted.',
+                    'code': 'peer_stop_failed',
+                }, status_code=409)
+
+        if observed_bytes is None and not quiescent and not req.allow_unverified:
+            return JSONResponse({
+                'error': 'Could not read the final traffic counter.',
+                'code': 'final_counter_read_failed',
+                'can_force': True,
+            }, status_code=409)
+    except FinalizationError as exc:
+        return JSONResponse({'error': str(exc), 'code': exc.code,
+                             'can_force': exc.can_force}, status_code=409)
+    except Exception as exc:
+        logger.exception("Error during unlink finalization SSH")
+        return JSONResponse({'error': str(exc), 'code': 'finalization_ssh_failed'},
+                            status_code=502)
+    finally:
+        if ssh:
+            try:
+                ssh.disconnect()
+            except Exception:
+                pass
+
+    async with DATA_LOCK:
+        before = pathlib_read_data_bytes() if os.path.exists(DATA_FILE) else b''
+        data = load_data()
+        conn = find_connection(data, req.server_id, req.protocol, req.client_id,
+                               user_id=user_id)
+        if conn is None:
+            return JSONResponse({'error': 'Connection link not found'},
+                                status_code=404)
+        mode = 'unlink_stopped' if req.stop else 'unlink_finalized'
+        accounting = finalize_connection_record(
+            data, conn, server, observed_bytes, time.time(), mode,
+            operation_id, quiescent)
+        result = await asyncio.to_thread(
+            commit_finalize, DATA_FILE, operation_id, actor, kind, intent,
+            before, data)
+        result['accounting'] = accounting
+        return result
 
 
 @app.get('/api/users/{user_id}/connections', tags=["Users"])
@@ -7939,13 +8186,14 @@ async def api_backup_restore(request: Request, file: UploadFile = File(...),
             replay = store.replay(op, actor, 'ordinary_restore', intent)
             if replay:
                 return replay
-            guard = _traffic_removal_guard(current, include_archived=True)
-            if guard is not None:
-                guard.body = json.dumps({'error': 'Ordinary restore cannot rewind owned usage. Use the offline administrator disaster-recovery workflow.',
-                                         'code': 'traffic_finalization_required',
-                                         'recovery': 'scripts/panel_recovery.py'}).encode()
-                guard.headers['content-length'] = str(len(guard.body))
-                return guard
+            from peer_recovery import prepare_online_restore
+            try:
+                backup_data = prepare_online_restore(current, backup_data)
+            except RecoveryError:
+                return JSONResponse({
+                    'error': 'Online restore requires unchanged servers, connections and user policy; current traffic accounting is retained. Use the offline administrator disaster-recovery workflow for incompatible backups.',
+                    'code': 'traffic_finalization_required',
+                    'recovery': 'scripts/panel_recovery.py'}, status_code=409)
             with STATE_FILE_LOCK:
                 check_create_journal(DATA_FILE, replacement=backup_data)
                 before = pathlib_read_data_bytes() if os.path.exists(DATA_FILE) else b''

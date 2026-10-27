@@ -146,23 +146,72 @@
         color: var(--text-muted);
         font-size: 0.78rem;
     }
+    .ssh-trust-btn { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+    .ssh-trust-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: 0 0 auto; }
+    .ssh-trust-btn.is-urgent { border-color: var(--warning); background: var(--warning-bg); color: var(--warning); }
+    .ssh-trust-dot.is-urgent { background: var(--warning); animation: sshTrustPulse 1.4s infinite; }
+    .ssh-trust-btn.is-danger { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); font-weight: 700; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
+    .ssh-trust-dot.is-danger { background: var(--danger); animation: sshTrustPulse .9s infinite; }
+    .ssh-trust-dot.is-ok { background: var(--success); }
+    @keyframes sshTrustPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(1.35); } }
 </style>
 {% endblock %}
 
 {% block content %}
 {% if current_user and current_user.role == 'admin' %}
-<section class="card" id="ssh-trust-panel" style="margin-bottom: 20px; padding: 20px;">
-    <h2>{{ _('ssh_trust_title') }}</h2>
-    <p>{{ _('ssh_trust_warning') }}</p>
-    <button class="btn btn-secondary" type="button" onclick="inspectSSHTrust()">{{ _('ssh_trust_inspect') }}</button>
-    <pre id="ssh-trust-details" aria-live="polite" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
-    <div id="ssh-trust-confirmation" hidden>
-        <label><input id="ssh-trust-verified" type="checkbox"> {{ _('ssh_trust_verified') }}</label>
-        <button id="ssh-trust-save" class="btn btn-primary" type="button" onclick="confirmSSHTrust()">{{ _('ssh_trust_save') }}</button>
+<div class="modal-backdrop" id="sshTrustModal">
+    <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+            <h2 class="modal-title">{{ _('ssh_trust_title') }}</h2>
+            <button class="modal-close" type="button" onclick="closeModal('sshTrustModal')">×</button>
+        </div>
+        <div class="modal-body" id="ssh-trust-panel">
+            <p class="text-muted" style="margin-top: 0;">{{ _('ssh_trust_warning') }}</p>
+            <button class="btn btn-secondary" type="button" onclick="inspectSSHTrust()">{{ _('ssh_trust_inspect') }}</button>
+            <pre id="ssh-trust-details" aria-live="polite" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+            <div id="ssh-trust-confirmation" hidden>
+                <label><input id="ssh-trust-verified" type="checkbox"> {{ _('ssh_trust_verified') }}</label>
+                <button id="ssh-trust-save" class="btn btn-primary" type="button" onclick="confirmSSHTrust()">{{ _('ssh_trust_save') }}</button>
+            </div>
+        </div>
     </div>
-</section>
+</div>
 <script>
     let sshTrustToken = null;
+    function setSSHTrustButton(state) {
+        const btn = document.getElementById('sshTrustBtn');
+        const text = document.getElementById('sshTrustBtnText');
+        const dot = document.getElementById('sshTrustDot');
+        if (!btn || !text || !dot) return;
+        btn.classList.remove('is-urgent', 'is-danger', 'is-ok');
+        dot.classList.remove('is-urgent', 'is-danger', 'is-ok');
+        if (state === 'changed') {
+            btn.classList.add('is-danger');
+            dot.classList.add('is-danger');
+            text.textContent = {{ _('ssh_trust_button_changed') | tojson }};
+        } else if (state === 'urgent') {
+            btn.classList.add('is-urgent');
+            dot.classList.add('is-urgent');
+            text.textContent = {{ _('ssh_trust_button_urgent') | tojson }};
+        } else {
+            btn.classList.add('is-ok');
+            dot.classList.add('is-ok');
+            text.textContent = {{ _('ssh_trust_button') | tojson }};
+        }
+    }
+
+    function openSSHTrustModal() {
+        openModal('sshTrustModal');
+    }
+
+    async function loadSSHTrustStatus() {
+        try {
+            const data = await apiCall('/api/servers/{{ server_id }}/ssh-trust/status?server_uid=' + encodeURIComponent({{ server.uid | tojson }}));
+            setSSHTrustButton(data.status === 'trusted' ? 'ok' : 'urgent');
+        } catch (error) {
+            setSSHTrustButton('urgent');
+        }
+    }
     async function inspectSSHTrust() {
         sshTrustToken = null;
         document.getElementById('ssh-trust-confirmation').hidden = true;
@@ -175,6 +224,9 @@
                 {{ _('ssh_trust_new') | tojson }} + ': ' + data.algorithm + ' ' + data.fingerprint + '\n' +
                 {{ _('ssh_trust_old') | tojson }} + ':\n' + data.old_fingerprints.map(k => k.algorithm + ' ' + k.fingerprint).join('\n');
             sshTrustToken = data.token;
+            if (data.status === 'changed') setSSHTrustButton('changed');
+            else if (data.status === 'trusted') setSSHTrustButton('ok');
+            else setSSHTrustButton('urgent');
             document.getElementById('ssh-trust-confirmation').hidden = data.status === 'trusted';
         } catch (error) { details.textContent = error.message; }
     }
@@ -191,6 +243,7 @@
             document.getElementById('ssh-trust-details').textContent = error.message;
         } finally { button.disabled = false; }
     }
+    document.addEventListener('DOMContentLoaded', loadSSHTrustStatus);
 </script>
 {% endif %}
 <a href="/" class="back-link page-back-link">{{ _('back_to_servers') }}</a>
@@ -209,6 +262,12 @@
         </div>
         <div class="page-header__actions">
             <div class="flex gap-sm items-center" id="serverStats" style="display:none;"></div>
+            {% if current_user and current_user.role == 'admin' %}
+            <button class="btn btn-sm ssh-trust-btn" type="button" id="sshTrustBtn" onclick="openSSHTrustModal()">
+                <span class="ssh-trust-dot" id="sshTrustDot"></span>
+                <span id="sshTrustBtnText">{{ _('ssh_trust_button') }}</span>
+            </button>
+            {% endif %}
             <button class="btn btn-secondary btn-sm" onclick="checkServer()" id="checkBtn">
                 <span id="checkBtnText">{{ _('server_check') }}</span>
                 <div class="spinner hidden" id="checkSpinner"></div>
@@ -2327,6 +2386,11 @@
         const clone = baseCard.cloneNode(true);
         replaceIdsRecursive(clone, baseKey, key);
         clone.id = `proto-${key}`;
+        const clonedInfo = clone.querySelector('.protocol-info');
+        if (clonedInfo) {
+            clonedInfo.innerHTML = '';
+            if (clonedInfo.parentElement) clonedInfo.parentElement.classList.add('hidden');
+        }
         const nameEl = clone.querySelector('.protocol-name');
         if (nameEl) nameEl.textContent = getProtoTitle(proto);
         const installBtn = clone.querySelector(`[id$="-install-btn"]`);
@@ -2361,6 +2425,14 @@
         // Some service cards may not exist in the template (e.g. on older builds);
         // skip quietly rather than throwing so a partial UI still renders.
         if (!statusEl || !actionsEl) return;
+
+        // A cloned multi-instance card starts as a copy of the base card, and a
+        // stopped container keeps whatever was rendered before. Reset first so
+        // stale counters from another instance/state never remain visible.
+        if (infoEl && infoGrid) {
+            infoGrid.innerHTML = '';
+            infoEl.classList.add('hidden');
+        }
 
         const isService = SERVICE_PROTOS.includes(protoBase(proto));
 
@@ -4267,7 +4339,7 @@
                             <button class="btn btn-secondary btn-sm btn-icon" onclick="showConnectionConfig('${escapeJs(client.clientId)}', '${escapeJs(name)}', ${!!userData.clientPrivateKey || proto === 'xray' || proto === 'telemt'})" title="${_('config')}">📄</button>
                             ${proto === 'telemt' ? `<button class="btn btn-secondary btn-sm btn-icon" onclick="editConnection('${escapeJs(client.clientId)}')" title="${_('edit')}">⚙️</button>` : ''}
                             <button class="btn btn-secondary btn-sm btn-icon ${toggleClass}" onclick="toggleConnection('${escapeJs(client.clientId)}', ${!enabled}, this)" title="${toggleTitle}">💡</button>
-                            <button class="btn btn-danger btn-sm btn-icon" onclick="removeConnection('${escapeJs(client.clientId)}')" title="${_('delete')}">${ICON_TRASH}</button>
+                            <button class="btn btn-danger btn-sm btn-icon" onclick="removeConnection('${escapeJs(client.clientId)}', ${enabled})" title="${_('delete')}">${ICON_TRASH}</button>
                         </div>
                     </div>
                 `;
@@ -4429,7 +4501,7 @@
         }
     }
 
-    async function removeConnection(clientId) {
+    async function removeConnection(clientId, enabled) {
         if (!confirm(_('delete_connection_confirm'))) return;
         const proto = document.getElementById('connProtoSelect').value;
         try {
@@ -4439,6 +4511,21 @@
             showToast(_('connection_deleted'), 'success');
             loadConnections();
         } catch (err) {
+            if (err.payload && err.payload.code === 'final_counter_read_failed' && err.payload.can_force) {
+                if (confirm(_('delete_unverified_confirm'))) {
+                    try {
+                        await apiCall(`/api/servers/${SERVER_ID}/connections/remove`, 'POST', {
+                            protocol: proto, client_id: clientId,
+                            allow_unverified: true,
+                        });
+                        showToast(_('connection_deleted'), 'success');
+                        loadConnections();
+                    } catch (retryErr) {
+                        showToast(_('error') + ': ' + retryErr.message, 'error');
+                    }
+                }
+                return;
+            }
             showToast(_('error') + ': ' + err.message, 'error');
         }
     }
@@ -4988,18 +5075,23 @@
             return;
         }
         const agentAlive = d.agent_state !== 'unknown';
-        const running = agentAlive && d.enabled !== false;
+        const liveOn = d.running !== undefined ? d.running : (d.agent_state === 'on' && d.enabled !== false);
         const sets = d.sets || {};
         const inN = (sets.in4 || 0) + (sets.in6 || 0);
         const outN = (sets.out4 || 0) + (sets.out6 || 0);
         const setsEmpty = [sets.in4, sets.in6, sets.out4, sets.out6].every(v => !v);
+        const healthy = liveOn && d.healthy !== false && !setsEmpty;
 
         // Status badge + red scan-alert badge that opens the scans modal.
-        let badge = running
+        // Installed + running is not enough: zero lists or failed verification
+        // means the contour is doing nothing, so show a warning, not green.
+        let badge = healthy
             ? `<span class="badge badge-success"><span class="badge-dot"></span> ${_('rknblock_state_on')}</span>`
-            : (agentAlive
-                ? `<span class="badge badge-warn"><span class="badge-dot"></span> ${_('rknblock_state_off')}</span>`
-                : `<span class="badge badge-danger"><span class="badge-dot"></span> ${_('rknblock_state_unreachable')}</span>`);
+            : (liveOn
+                ? `<span class="badge badge-warn"><span class="badge-dot"></span> ${escapeHtml(setsEmpty ? _('rkn_block_sets_empty') : _('rkn_block_not_ready'))}</span>`
+                : (agentAlive
+                    ? `<span class="badge badge-warn"><span class="badge-dot"></span> ${_('rknblock_state_off')}</span>`
+                    : `<span class="badge badge-danger"><span class="badge-dot"></span> ${_('rknblock_state_unreachable')}</span>`));
         if (d.last_24h > 0) {
             badge += ` <button type="button"
                 style="background:var(--danger,#f85149); color:#fff; cursor:pointer; border:none;
@@ -5008,7 +5100,7 @@
                 title="${escapeHtml(_('rkn_block_recent'))}">⚠ ${escapeHtml(_('rkn_scan_alert'))} (${d.last_24h}) · ${escapeHtml(_('rkn_scans_more'))}</button>`;
         }
         statusEl.innerHTML = badge;
-        toggleBtn.textContent = running ? _('rknblock_stop') : _('rknblock_start');
+        toggleBtn.textContent = liveOn ? _('rknblock_stop') : _('rknblock_start');
 
         // Card keeps only the short summary; full details live in the modal.
         const flags = d.flags || {};

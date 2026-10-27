@@ -721,6 +721,7 @@
   "rkn_block_recent": "Événements récents",
   "rkn_block_sets": "ensembles",
   "rkn_block_sets_empty": "ensembles vides — échec du update",
+  "rkn_block_not_ready": "Installé, mais inactif — vérifiez les listes et les règles iptables",
   "rkn_block_clear": "Effacer les statistiques de scan",
   "rkn_block_clear_confirm": "Effacer le journal des scans sur le serveur ?",
   "rkn_block_cleared": "Statistiques effacées",
@@ -771,6 +772,9 @@
   "public_endpoint_port_docker": "Le port est utilisé par votre propre Docker — publication possible",
   "public_endpoint_port_busy": "Le port est occupé :",
   "public_endpoint_port_invalid": "Saisissez un numéro de port (1-65535).",
+    "ssh_trust_button": "Clé SSH",
+    "ssh_trust_button_urgent": "Vérifier la clé SSH d'urgence",
+    "ssh_trust_button_changed": "La clé SSH a changé !",
     "ssh_trust_title": "Clé hôte SSH",
     "ssh_trust_warning": "Vérifiez indépendamment l’empreinte via la console du serveur/fournisseur (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub). Un changement peut signaler une attaque. Ne faites pas confiance à une clé uniquement parce que cette page l’affiche.",
     "ssh_trust_inspect": "Examiner la clé SSH",
@@ -921,5 +925,8 @@
     "smartroute_doc_fit_ok": "Adapté : vous avez besoin d'une latence plus faible ou d'accéder à des services RU qui refusent les IP étrangères, et masquer l'usage du VPN à l'hébergeur ou à l'État ne fait pas partie de votre modèle de menace.",
     "smartroute_doc_fit_no": "Non adapté : vous avez besoin d'anonymat vis-à-vis du FAI ou de l'État, ou d'une protection contre la corrélation du trafic et le blocage par IP. Utilisez alors le tunnel complet via le nœud de sortie.",
     "smartroute_doc_fail_title": "En cas d'incident.",
-    "smartroute_doc_fail": "Si le nœud de sortie devient injoignable, le trafic RU continue de sortir directement tandis que le reste s'arrête. Lorsque Smart Route est désactivé, l'instance revient automatiquement au tunnel complet via la sortie."
+    "smartroute_doc_fail": "Si le nœud de sortie devient injoignable, le trafic RU continue de sortir directement tandis que le reste s'arrête. Lorsque Smart Route est désactivé, l'instance revient automatiquement au tunnel complet via la sortie.",
+    "delete_unverified_confirm": "Impossible de lire le compteur de trafic final. Supprimer sans comptabiliser les derniers octets ?",
+    "unlink_stop_and_unlink_confirm": "Le pair est actif. L’arrêter et le dissocier ?",
+    "unlink_unverified_confirm": "Impossible de lire le compteur de trafic final. Dissocier sans comptabiliser les derniers octets ?"
 }
