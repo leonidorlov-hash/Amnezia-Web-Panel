@@ -3483,44 +3483,133 @@ async def _finish_server_operation(operation):
     return worker.result()
 
 
+def _classify_ssh_error(exc):
+    """Map SSH/save failures to a stable machine-readable code.
+
+    The typed checks come first; the message fallback only distinguishes
+    the two host-key states Paramiko reports as generic SSHException.
+    """
+    import paramiko as _paramiko
+
+    if isinstance(exc, _paramiko.AuthenticationException):
+        return 'authentication_failed'
+    if isinstance(exc, _paramiko.BadHostKeyException):
+        return 'host_key_changed'
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return 'network_error'
+    if isinstance(exc, _paramiko.SSHException):
+        message = str(exc).lower()
+        if 'not found in known_hosts' in message:
+            return 'host_key_unknown'
+        if 'host key' in message and any(
+                marker in message for marker in ('does not match', 'mismatch', 'changed')):
+            return 'host_key_changed'
+        if any(marker in message for marker in (
+                'authentication', 'auth failed', 'private key', 'password')):
+            return 'authentication_failed'
+        # Remaining Paramiko handshake/transport failures are reachability
+        # problems: banner errors, refused/invalid connections, closed peers.
+        return 'network_error'
+    return 'internal_error'
+
+
+def _exception_text(exc):
+    try:
+        return str(exc)
+    except Exception:
+        return type(exc).__name__
+
+
+def _enrollment_payload(req):
+    """Validate an add/test request and return the normalized fields."""
+    host = req.host.strip()
+    username = req.username.strip()
+    if not host or not username:
+        raise ValueError('Host and username are required')
+    if not req.password and not req.private_key:
+        raise ValueError('Password or SSH key is required')
+    return host, username
+
+
+@app.post('/api/servers/test', tags=["Servers"])
+async def api_test_server(request: Request, req: AddServerRequest):
+    """Test host-key trust, authentication and connectivity without saving.
+
+    First enrollment is trust-on-first-use: an unknown key is pinned after a
+    key-only probe, then credentials are tested. A changed key is never
+    overridden here; the UI must confirm it through the onboarding endpoint.
+    """
+    if not _ssh_trust_admin(request):
+        return JSONResponse({'error': 'Forbidden', 'error_code': 'forbidden'}, status_code=403)
+    try:
+        host, username = _enrollment_payload(req)
+    except ValueError as exc:
+        return JSONResponse({'error': str(exc), 'error_code': 'validation_error'},
+                            status_code=400)
+
+    endpoint = {'host': host, 'ssh_port': req.ssh_port, 'uid': None,
+                'enrollment_context': 'new-server'}
+    try:
+        inspection = await asyncio.to_thread(ssh_trust.inspect, endpoint)
+    except Exception as exc:
+        error_code = _classify_ssh_error(exc)
+        logger.warning("Server test host-key inspection failed: %s (%s)",
+                       error_code, type(exc).__name__)
+        return JSONResponse({'error': f'Host key check failed: {_exception_text(exc)}',
+                             'error_code': error_code}, status_code=400)
+
+    if inspection.get('status') == 'changed':
+        # Do not authenticate and do not overwrite the pin. The client must
+        # show the old/new fingerprints and explicitly confirm the new key.
+        return JSONResponse({
+            'error': 'Host key changed; verify and accept the new key',
+            'error_code': 'host_key_changed',
+            'host_key': inspection,
+        }, status_code=409)
+
+    try:
+        if inspection.get('status') == 'unknown':
+            await asyncio.to_thread(ssh_trust.enroll, endpoint, inspection['token'])
+    except Exception as exc:
+        error_code = _classify_ssh_error(exc)
+        logger.warning("Server test host-key pin failed: %s (%s)",
+                       error_code, type(exc).__name__)
+        return JSONResponse({'error': f'Host key pin failed: {_exception_text(exc)}',
+                             'error_code': error_code}, status_code=400)
+
+    def verify():
+        ssh = SSHManager(host, req.ssh_port, username, req.password, req.private_key)
+        try:
+            ssh.connect()
+            return ssh.test_connection()
+        finally:
+            ssh.disconnect()
+
+    try:
+        server_info = await asyncio.to_thread(verify)
+    except Exception as exc:
+        error_code = _classify_ssh_error(exc)
+        # Never log credentials or raw connection detail.
+        logger.warning("Server test authentication failed: %s (%s)",
+                       error_code, type(exc).__name__)
+        return JSONResponse({'error': f'Connection failed: {_exception_text(exc)}',
+                             'error_code': error_code}, status_code=400)
+
+    return {
+        'status': 'success',
+        'server_info': server_info,
+        'host_key': {
+            'host': host, 'port': req.ssh_port,
+            'algorithm': inspection['algorithm'],
+            'fingerprint': inspection['fingerprint'],
+            'status': 'pinned' if inspection.get('status') == 'unknown' else 'trusted',
+        },
+    }
+
+
 @app.post('/api/servers/add', tags=["Servers"])
 @serialize_peer_lifecycle
 async def api_add_server(request: Request, req: AddServerRequest):
-    import paramiko as _paramiko
-
-    def classify_add_error(exc):
-        """Map SSH/save failures to a stable machine-readable code.
-
-        The typed checks come first; the message fallback only distinguishes
-        the two host-key states Paramiko reports as generic SSHException.
-        """
-        if isinstance(exc, _paramiko.AuthenticationException):
-            return 'authentication_failed'
-        if isinstance(exc, _paramiko.BadHostKeyException):
-            return 'host_key_changed'
-        if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
-            return 'network_error'
-        if isinstance(exc, _paramiko.SSHException):
-            message = str(exc).lower()
-            if 'not found in known_hosts' in message:
-                return 'host_key_unknown'
-            if 'host key' in message and any(
-                    marker in message for marker in ('does not match', 'mismatch', 'changed')):
-                return 'host_key_changed'
-            if any(marker in message for marker in (
-                    'authentication', 'auth failed', 'private key', 'password')):
-                return 'authentication_failed'
-            # Remaining Paramiko handshake/transport failures are reachability
-            # problems: banner errors, refused/invalid connections, closed peers.
-            return 'network_error'
-        return 'internal_error'
-
-    def exception_text(exc):
-        try:
-            return str(exc)
-        except Exception:
-            return type(exc).__name__
-
     actor = _check_admin(request)
     # Enrolling a new SSH host is an administrator-only action. Keep the
     # isinstance guard because some callers/tests inject a truthy sentinel.
@@ -3547,12 +3636,12 @@ async def api_add_server(request: Request, req: AddServerRequest):
         try:
             server_info = await asyncio.to_thread(verify)
         except Exception as e:
-            error_code = classify_add_error(e)
+            error_code = _classify_ssh_error(e)
             # Log only the classification and exception type; credentials and
             # raw Paramiko/OS detail must never reach the panel log here.
             logger.warning("Server add verification failed: %s (%s)",
                            error_code, type(e).__name__)
-            return JSONResponse({'error': f'Connection failed: {exception_text(e)}',
+            return JSONResponse({'error': f'Connection failed: {_exception_text(e)}',
                                  'error_code': error_code}, status_code=400)
 
         server = {
@@ -3571,7 +3660,7 @@ async def api_add_server(request: Request, req: AddServerRequest):
         return {'status': 'success', 'server_id': server_id, 'server_info': server_info}
     except Exception as e:
         logger.exception("Error adding server")
-        return JSONResponse({'error': exception_text(e), 'error_code': 'internal_error'}, status_code=500)
+        return JSONResponse({'error': _exception_text(e), 'error_code': 'internal_error'}, status_code=500)
 
 
 @app.post('/api/servers/{server_id}/edit', tags=["Servers"])
@@ -3667,8 +3756,15 @@ async def api_server_ping(request: Request, server_id: int):
         except Exception:
             pass
         try:
-            trust = await asyncio.to_thread(ssh_trust.saved_status, server)
-            return {'alive': True, 'ms': ms, 'ssh_trust': trust, 'ssh_verified': False}
+            # A live key-only probe (no credentials) detects a changed host key
+            # before the admin opens the server page. Cached saved status alone
+            # cannot distinguish "trusted" from "changed".
+            inspection = await asyncio.wait_for(
+                asyncio.to_thread(ssh_trust.inspect, server), timeout=5.0)
+            return {'alive': True, 'ms': ms,
+                    'ssh_trust': inspection.get('status', 'error'),
+                    'ssh_trust_detail': inspection,
+                    'ssh_verified': inspection.get('status') == 'trusted'}
         except Exception:
             return {'alive': True, 'ms': ms, 'ssh_trust': 'error'}
     except asyncio.TimeoutError:

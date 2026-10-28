@@ -1,10 +1,14 @@
-"""Browser regressions for the add-server wizard's real inline handlers.
+"""Browser regressions for the compact add-server enrollment form.
 
 The page is rendered with Jinja, its production scripts and stylesheet are
-removed, and only the wizard script is re-attached to a synthetic DOM/backend.
-That keeps the test offline while still executing the handler code that ships
-in templates/server_new.html.  Selectors and error codes below come from the
-current template and app.py; no production data or SSH is touched.
+removed, and only the enrollment script is re-attached to a synthetic DOM and
+API stub. That keeps the test offline while still executing the handler code
+that ships in ``templates/server_new.html``.
+
+The flow under test is the compact one recommended in the upstream design
+review: fill the form, test the connection (which pins an unknown host key),
+and only then enable "Add server". A changed key blocks the flow until the
+operator confirms it explicitly.
 """
 import json
 import os
@@ -15,77 +19,64 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 ROOT = Path(__file__).resolve().parents[1]
-INSPECT = '/api/ssh-trust/onboarding/inspect'
-CONFIRM = '/api/ssh-trust/onboarding/confirm'
+TEST = '/api/servers/test'
 ADD = '/api/servers/add'
+CONFIRM = '/api/ssh-trust/onboarding/confirm'
 
 
 HELPERS_JS = r"""
 window._ = function (key) { return window.I18N[key] || key; };
 
-const INSPECT = '/api/ssh-trust/onboarding/inspect';
-const CONFIRM = '/api/ssh-trust/onboarding/confirm';
+const TEST = '/api/servers/test';
 const ADD = '/api/servers/add';
+const CONFIRM = '/api/ssh-trust/onboarding/confirm';
 const calls = [];
-let inspectResponses = [{
-    status: 'unknown',
-    host: 'node.example.test',
-    port: 2222,
-    algorithm: 'ssh-ed25519',
-    fingerprint: 'SHA256:synthetic',
-    old_fingerprints: [],
-    token: 'synthetic-token'
-}];
-let addResult = {status: 'success', server_id: 7, server_info: {}};
+let testOutcomes = [];
 let addErrorCode = null;
-let addErrorOnce = null;
-let delayedInspect = false;
-let pendingInspect = null;
+let delayedTest = false;
+let pendingTest = null;
+
+function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
 async function apiCall(url, method = 'GET', body = null) {
     calls.push({url: url, method: method,
-                body: body ? JSON.parse(JSON.stringify(body)) : null});
-    if (url === INSPECT) {
-        if (delayedInspect) {
-            delayedInspect = false;
+                body: body ? clone(body) : null});
+    if (url === TEST) {
+        if (delayedTest) {
+            delayedTest = false;
             await new Promise(resolve => {
-                pendingInspect = {
-                    body: body,
-                    resolve: () => {
-                        pendingInspect = null;
-                        resolve();
-                    }
-                };
+                pendingTest = {resolve: () => { pendingTest = null; resolve(); }};
             });
         }
-        const response = inspectResponses.length > 1
-            ? inspectResponses.shift() : inspectResponses[0];
-        return JSON.parse(JSON.stringify(response));
+        const outcome = testOutcomes.length ? testOutcomes.shift() : null;
+        if (outcome && outcome.error) {
+            const error = new Error(outcome.error.error_code || 'error');
+            error.payload = clone(outcome.error);
+            throw error;
+        }
+        if (outcome) return clone(outcome.response);
+        return {status: 'success', host_key: {
+            host: 'node.example.test', port: 2222,
+            algorithm: 'ssh-ed25519', fingerprint: 'SHA256:trusted',
+            status: 'trusted'}};
     }
     if (url === CONFIRM) {
         return {status: 'success', ssh_authenticated: false};
     }
     if (url === ADD) {
-        if (addErrorOnce) {
-            const code = addErrorOnce;
-            addErrorOnce = null;
-            const error = new Error(code);
-            error.payload = {error: code, error_code: code};
-            throw error;
-        }
         if (addErrorCode) {
             const error = new Error(addErrorCode);
             error.payload = {error: addErrorCode, error_code: addErrorCode};
             throw error;
         }
-        return JSON.parse(JSON.stringify(addResult));
+        return {status: 'success', server_id: 7, server_info: {}};
     }
     throw new Error('unexpected API call: ' + url);
 }
 """
 
 
-class ServerWizardBrowserTests(unittest.TestCase):
+class CompactEnrollmentBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
@@ -120,9 +111,18 @@ class ServerWizardBrowserTests(unittest.TestCase):
             bot_running=False,
         )
         scripts = re.findall(r'<script\b[^>]*>(.*?)</script>', cls.html, re.S)
-        cls.wizard_js = next((script for script in scripts if 'const wizardState' in script), None)
-        if not cls.wizard_js:
-            raise AssertionError('the wizard script was not found in templates/server_new.html')
+        wizard_js = next((script for script in scripts if 'const enrollState' in script), None)
+        if not wizard_js:
+            raise AssertionError('the enrollment script was not found in templates/server_new.html')
+        # The synthetic page has no real origin. Capture the post-add redirect
+        # instead of letting it destroy the test page.
+        wizard_js, replaced = re.subn(
+            r"window\.location\.href = '/server/' \+ result\.server_id;",
+            "window.__serverHref = '/server/' + result.server_id;",
+            wizard_js)
+        if replaced != 1:
+            raise AssertionError('the post-add redirect was not found in the enrollment script')
+        cls.wizard_js = wizard_js
 
     @classmethod
     def tearDownClass(cls):
@@ -141,8 +141,6 @@ class ServerWizardBrowserTests(unittest.TestCase):
         page.on('pageerror', lambda error: errors.append(str(error)))
         self.addCleanup(self.assertEqual, errors, [], 'uncaught JavaScript errors')
 
-        # Remove production scripts and external assets; CSS is added from disk
-        # below so mobile layout checks exercise the shipped rules.
         html = re.sub(r'<script\b.*?</script>', '', self.html, flags=re.S)
         html = re.sub(r'<link[^>]+>', '', html)
         page.set_content(html)
@@ -154,368 +152,206 @@ class ServerWizardBrowserTests(unittest.TestCase):
     def calls(self, page, path):
         return page.evaluate('(path) => calls.filter(call => call.url === path)', path)
 
-    def configure_inspect(self, page, *responses):
-        page.evaluate('(responses) => { inspectResponses = responses; }', list(responses))
+    def click(self, page, selector):
+        # Inline onclick handlers are what ships; dispatch the DOM click
+        # directly so the synthetic about:blank page cannot make Playwright's
+        # mouse hit-testing flaky when result panels resize the form.
+        page.evaluate('(selector) => document.querySelector(selector).click()', selector)
 
-    def configure_add_error(self, page, code):
-        page.evaluate('(code) => { addErrorCode = code; }', code)
+    def configure_outcomes(self, page, *outcomes):
+        page.evaluate('(outcomes) => { testOutcomes = outcomes; }', list(outcomes))
 
-    def configure_add_error_once(self, page, code):
-        page.evaluate('(code) => { addErrorOnce = code; }', code)
+    def fill_valid(self, page, host='node.example.test', port='2222',
+                   user='root', password='synthetic-password'):
+        page.fill('#enrollHost', host)
+        page.fill('#enrollPort', port)
+        page.fill('#enrollUser', user)
+        page.fill('#enrollPassword', password)
 
-    def set_address_field(self, page, selector, value):
-        """Change a possibly hidden address field and run the real input handler."""
-        page.evaluate(
-            '([selector, value]) => {'
-            '  const input = document.querySelector(selector);'
-            '  input.value = value;'
-            "  input.dispatchEvent(new Event('input', {bubbles: true}));"
-            '}',
-            [selector, value])
+    def success_outcome(self, fingerprint='SHA256:trusted', status='trusted'):
+        return {'response': {
+            'status': 'success',
+            'server_info': {'hostname': 'synthetic'},
+            'host_key': {
+                'host': 'node.example.test', 'port': 2222,
+                'algorithm': 'ssh-ed25519', 'fingerprint': fingerprint,
+                'status': status,
+            },
+        }}
 
-    def drive_to_trust(self, page, host='node.example.test', port='2222'):
-        page.fill('#wizardHost', host)
-        page.fill('#wizardPort', port)
-        page.click('#wizardAddressNext')
-        page.wait_for_function(
-            "wizardState.step === 2 && !document.getElementById('wizardTrustBody').hidden")
+    def changed_outcome(self, token='changed-token'):
+        return {'error': {
+            'error': 'Host key changed; verify and accept the new key',
+            'error_code': 'host_key_changed',
+            'host_key': {
+                'host': 'node.example.test', 'port': 2222,
+                'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:new',
+                'old_fingerprints': [{'algorithm': 'ssh-ed25519',
+                                      'fingerprint': 'SHA256:old'}],
+                'status': 'changed', 'token': token,
+            },
+        }}
 
-    def drive_to_review(self, page, password='synthetic-password'):
-        page.fill('#wizardUser', 'root')
-        page.fill('#wizardPassword', password)
-        page.evaluate('wizardReview()')
-        page.wait_for_function('wizardState.step === 4')
-
-    def test_unknown_inspect_and_confirmation_never_send_credentials(self):
+    def test_add_is_disabled_until_a_successful_test(self):
         page = self.new_page()
-        self.configure_inspect(page, {
-            'status': 'unknown', 'host': 'node.example.test', 'port': 2222,
-            'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:unknown',
-            'old_fingerprints': [], 'token': 'synthetic-token',
+        self.configure_outcomes(page, self.success_outcome())
+        self.assertTrue(page.locator('#enrollAddBtn').is_disabled())
+
+        self.fill_valid(page)
+        self.assertTrue(page.locator('#enrollAddBtn').is_disabled())
+        self.assertEqual(self.calls(page, TEST), [])
+
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function("document.getElementById('enrollSuccess').hidden === false")
+
+        test_calls = self.calls(page, TEST)
+        self.assertEqual(len(test_calls), 1)
+        self.assertEqual(test_calls[0]['method'], 'POST')
+        self.assertEqual(test_calls[0]['body'], {
+            'name': '', 'host': 'node.example.test', 'ssh_port': 2222,
+            'username': 'root', 'password': 'synthetic-password', 'private_key': '',
         })
-        self.drive_to_trust(page)
+        self.assertFalse(page.locator('#enrollAddBtn').is_disabled())
+        self.assertIn('SHA256:trusted', page.locator('#enrollSuccessText').text_content())
 
-        inspect = self.calls(page, INSPECT)
-        self.assertEqual(len(inspect), 1)
-        self.assertEqual(inspect[0]['body'], {'host': 'node.example.test', 'ssh_port': 2222})
-        for field in ('username', 'password', 'private_key'):
-            self.assertNotIn(field, inspect[0]['body'])
-        self.assertTrue(page.locator('#wizardTrustUnknownCheck').is_visible())
-        self.assertTrue(page.locator('#wizardTrustChangedChecklist').is_hidden())
-        self.assertTrue(page.locator('#wizardOldFingerprintWrap').is_hidden())
+        self.click(page, '#enrollAddBtn')
+        page.wait_for_function('window.__serverHref !== undefined')
+        self.assertEqual(page.evaluate('window.__serverHref'), '/server/7')
+        self.assertEqual(len(self.calls(page, ADD)), 1)
+        self.assertEqual(page.input_value('#enrollPassword'), '')
 
-        self.assertTrue(page.locator('#wizardTrustContinue').is_disabled())
-        page.evaluate('wizardTrustContinue()')
+        # Credentials only go to the two enrollment endpoints.
+        for path in (TEST, ADD):
+            for call in self.calls(page, path):
+                self.assertIn('password', call['body'])
+        self.assertEqual(self.calls(page, CONFIRM), [])
+        # Credentials live only in page memory; the shipped script must not
+        # persist them in browser storage.
+        self.assertNotIn('localStorage', self.wizard_js)
+        self.assertNotIn('sessionStorage', self.wizard_js)
+
+    def test_private_key_tab_sends_only_the_key(self):
+        page = self.new_page()
+        self.configure_outcomes(page, self.success_outcome())
+        self.click(page, '#enrollKeyTab')
+        self.assertTrue(page.locator('#authPassword').is_hidden())
+        self.assertTrue(page.locator('#authKey').is_visible())
+
+        page.fill('#enrollHost', 'node.example.test')
+        page.fill('#enrollPort', '2222')
+        page.fill('#enrollUser', 'root')
+        page.fill('#enrollKey', '-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic\n-----END OPENSSH PRIVATE KEY-----')
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function("document.getElementById('enrollSuccess').hidden === false")
+
+        body = self.calls(page, TEST)[0]['body']
+        self.assertEqual(body['password'], '')
+        self.assertIn('synthetic', body['private_key'])
+
+    def test_changed_key_blocks_add_until_explicitly_accepted(self):
+        page = self.new_page()
+        self.configure_outcomes(
+            page,
+            self.changed_outcome(),
+            self.success_outcome(fingerprint='SHA256:new'),
+        )
+        self.fill_valid(page)
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function("document.getElementById('enrollChanged').hidden === false")
+
+        self.assertTrue(page.locator('#enrollAddBtn').is_disabled())
+        self.assertTrue(page.locator('#enrollSuccess').is_hidden())
+        details = page.locator('#enrollChangedDetails').text_content()
+        self.assertIn('SHA256:new', details)
+        self.assertIn('SHA256:old', details)
+        self.assertTrue(page.locator('#enrollAcceptBtn').is_disabled())
+
+        page.evaluate('acceptChangedKey()')
         page.wait_for_timeout(50)
         self.assertEqual(self.calls(page, CONFIRM), [])
 
-        page.check('#wizardTrustVerified')
-        self.assertFalse(page.locator('#wizardTrustContinue').is_disabled())
-        page.click('#wizardTrustContinue')
-        page.wait_for_function('wizardState.step === 3')
+        page.check('#enrollChangedVerified')
+        self.assertTrue(page.locator('#enrollChanged').is_visible())
+        self.assertFalse(page.locator('#enrollAcceptBtn').is_disabled())
+        self.click(page, '#enrollAcceptBtn')
+        page.wait_for_function("document.getElementById('enrollSuccess').hidden === false")
+        page.wait_for_function('calls.filter(call => call.url === TEST).length === 2')
 
         confirm = self.calls(page, CONFIRM)
         self.assertEqual(len(confirm), 1)
         self.assertEqual(confirm[0]['body'], {
             'host': 'node.example.test', 'ssh_port': 2222,
-            'token': 'synthetic-token', 'confirmed': True,
+            'token': 'changed-token', 'confirmed': True,
         })
         for field in ('username', 'password', 'private_key'):
             self.assertNotIn(field, confirm[0]['body'])
+        self.assertFalse(page.locator('#enrollAddBtn').is_disabled())
+        self.assertTrue(page.locator('#enrollChanged').is_hidden())
 
-    def test_trusted_key_moves_to_credentials_without_confirmation(self):
+    def test_editing_the_form_invalidates_the_test(self):
         page = self.new_page()
-        self.configure_inspect(page, {
-            'status': 'trusted', 'host': 'node.example.test', 'port': 2222,
-            'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:trusted',
-            'old_fingerprints': [],
-        })
-        self.drive_to_trust(page)
+        self.configure_outcomes(page, self.success_outcome(), self.success_outcome())
+        self.fill_valid(page)
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function("document.getElementById('enrollSuccess').hidden === false")
+        self.assertFalse(page.locator('#enrollAddBtn').is_disabled())
 
-        self.assertEqual(page.locator('#wizardTrustBadge').text_content(),
-                         page.evaluate("_('ssh_trust_trusted')"))
-        self.assertTrue(page.locator('#wizardTrustConfirmWrap').is_hidden())
-        self.assertFalse(page.locator('#wizardTrustContinue').is_disabled())
-        self.assertEqual(page.locator('#wizardTrustContinue').text_content().strip(),
-                         page.evaluate("_('wizard_continue')"))
+        page.fill('#enrollHost', 'other.example.test')
+        self.assertTrue(page.locator('#enrollAddBtn').is_disabled())
+        self.assertTrue(page.locator('#enrollSuccess').is_hidden())
+        self.assertTrue(page.locator('#enrollTestHint').is_visible())
 
-        page.click('#wizardTrustContinue')
-        page.wait_for_function('wizardState.step === 3')
-        self.assertEqual(self.calls(page, CONFIRM), [])
-
-    def test_changed_key_needs_both_checkboxes_before_confirm(self):
-        page = self.new_page()
-        self.configure_inspect(page, {
-            'status': 'changed', 'host': 'node.example.test', 'port': 2222,
-            'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:new',
-            'old_fingerprints': [{'algorithm': 'ssh-ed25519',
-                                  'fingerprint': 'SHA256:old'}],
-            'token': 'changed-token',
-        })
-        self.drive_to_trust(page)
-
-        self.assertTrue(page.locator('#wizardTrustChangedChecklist').is_visible())
-        self.assertTrue(page.locator('#wizardTrustUnknownCheck').is_hidden())
-        self.assertTrue(page.locator('#wizardOldFingerprintWrap').is_visible())
-        self.assertIn('SHA256:new', page.locator('#wizardTrustFingerprint').text_content())
-        self.assertIn('SHA256:old', page.locator('#wizardOldFingerprints').text_content())
-        self.assertTrue(page.locator('#wizardTrustContinue').is_disabled())
-
-        page.evaluate('wizardTrustContinue()')
+        page.evaluate('addServer()')
         page.wait_for_timeout(50)
-        self.assertEqual(self.calls(page, CONFIRM), [])
-
-        page.check('#wizardTrustChangedVerified')
-        self.assertTrue(page.locator('#wizardTrustContinue').is_disabled())
-        page.evaluate('wizardTrustContinue()')
-        page.wait_for_timeout(50)
-        self.assertEqual(self.calls(page, CONFIRM), [])
-
-        page.check('#wizardTrustChangedReplace')
-        self.assertFalse(page.locator('#wizardTrustContinue').is_disabled())
-        page.click('#wizardTrustContinue')
-        page.wait_for_function('wizardState.step === 3')
-
-        confirm = self.calls(page, CONFIRM)
-        self.assertEqual(len(confirm), 1)
-        self.assertEqual(confirm[0]['body']['token'], 'changed-token')
-        self.assertTrue(confirm[0]['body']['confirmed'])
-        for field in ('username', 'password', 'private_key'):
-            self.assertNotIn(field, confirm[0]['body'])
-
-    def test_credentials_only_go_to_add_and_success_links_to_the_server(self):
-        page = self.new_page()
-        self.configure_inspect(page, {
-            'status': 'trusted', 'host': 'node.example.test', 'port': 2222,
-            'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:trusted',
-            'old_fingerprints': [],
-        })
-        self.drive_to_trust(page)
-        page.click('#wizardTrustContinue')
-        page.wait_for_function('wizardState.step === 3')
-
-        self.drive_to_review(page)
         self.assertEqual(self.calls(page, ADD), [])
 
-        page.click('#wizardConnectBtn')
-        page.wait_for_function("document.getElementById('wizardSuccess').hidden === false")
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function("document.getElementById('enrollSuccess').hidden === false")
+        self.assertFalse(page.locator('#enrollAddBtn').is_disabled())
 
-        add = self.calls(page, ADD)
-        self.assertEqual(len(add), 1)
-        self.assertEqual(add[0]['body']['host'], 'node.example.test')
-        self.assertEqual(add[0]['body']['ssh_port'], 2222)
-        self.assertEqual(add[0]['body']['username'], 'root')
-        self.assertEqual(add[0]['body']['password'], 'synthetic-password')
-        self.assertNotIn('private_key', add[0]['body'])
-
-        # Credentials are not copied into either trust endpoint.
-        for path in (INSPECT, CONFIRM):
-            for call in self.calls(page, path):
-                for field in ('username', 'password', 'private_key'):
-                    self.assertNotIn(field, call['body'])
-
-        self.assertTrue(page.locator('#wizardConnectPanel').is_hidden())
-        self.assertTrue(page.locator('#wizardSuccess').is_visible())
-        self.assertEqual(page.get_attribute('#wizardOpenServer', 'href'), '/server/7')
-        self.assertEqual(page.input_value('#wizardPassword'), '')
-
-    def test_add_error_codes_route_the_ui_to_the_matching_step(self):
-        cases = {
-            'authentication_failed': ('#wizardCredentialsError', 'wizard_error_auth', 3),
-            'network_error': ('#wizardConnectError', 'wizard_error_network', 4),
-        }
-        for code, (selector, message_key, step) in cases.items():
-            with self.subTest(error_code=code):
-                page = self.new_page()
-                self.configure_inspect(page, {
-                    'status': 'trusted', 'host': 'node.example.test', 'port': 2222,
-                    'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:trusted',
-                    'old_fingerprints': [],
-                })
-                self.drive_to_trust(page)
-                page.click('#wizardTrustContinue')
-                page.wait_for_function('wizardState.step === 3')
-                self.drive_to_review(page)
-                self.configure_add_error(page, code)
-
-                page.click('#wizardConnectBtn')
-                page.wait_for_function(
-                    '(args) => wizardState.step === args[0] && '
-                    '!document.querySelector(args[1]).hidden',
-                    arg=[step, selector])
-                self.wait_for_error_text(page, selector, message_key)
-
-                self.assertEqual(page.evaluate("_('%s')" % message_key),
-                                 page.locator(selector).text_content())
-                self.assertEqual(len(self.calls(page, INSPECT)), 1)
-                self.assertEqual(self.calls(page, CONFIRM), [])
-                self.assertTrue(page.evaluate('wizardState.trustSatisfied'))
-
-        for code, status in (('host_key_unknown', 'unknown'),
-                             ('host_key_changed', 'changed')):
-            with self.subTest(error_code=code):
-                page = self.new_page()
-                self.configure_inspect(
-                    page,
-                    {'status': 'trusted', 'host': 'node.example.test', 'port': 2222,
-                     'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:trusted',
-                     'old_fingerprints': []},
-                    {'status': status, 'host': 'node.example.test', 'port': 2222,
-                     'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:current',
-                     'old_fingerprints': [], 'token': 'replacement-token'},
-                )
-                self.drive_to_trust(page)
-                page.click('#wizardTrustContinue')
-                page.wait_for_function('wizardState.step === 3')
-                self.drive_to_review(page)
-                self.configure_add_error(page, code)
-
-                page.click('#wizardConnectBtn')
-                page.wait_for_function(
-                    '(status) => wizardState.step === 2 && '
-                    'wizardState.candidate && wizardState.candidate.status === status && '
-                    "!document.getElementById('wizardTrustBody').hidden && "
-                    '!wizardState.busy', arg=status)
-                message_key = ('wizard_error_host_key_unknown' if code == 'host_key_unknown'
-                               else 'wizard_error_host_key_changed')
-                self.wait_for_error_text(page, '#wizardInspectError', message_key)
-
-                self.assertEqual(len(self.calls(page, INSPECT)), 2)
-                self.assertEqual(self.calls(page, CONFIRM), [])
-                self.assertFalse(page.evaluate('wizardState.trustSatisfied'))
-
-    def test_host_key_rejection_recovers_and_second_add_succeeds(self):
+    def test_stale_test_response_cannot_enable_add(self):
         page = self.new_page()
-        self.configure_inspect(
-            page,
-            {'status': 'trusted', 'host': 'node.example.test', 'port': 2222,
-             'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:trusted',
-             'old_fingerprints': []},
-            {'status': 'changed', 'host': 'node.example.test', 'port': 2222,
-             'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:changed',
-             'old_fingerprints': [{'algorithm': 'ssh-ed25519',
-                                   'fingerprint': 'SHA256:trusted'}],
-             'token': 'replacement-token'},
-        )
-        self.drive_to_trust(page)
-        page.click('#wizardTrustContinue')
-        page.wait_for_function('wizardState.step === 3')
-        self.drive_to_review(page)
+        self.configure_outcomes(page, self.success_outcome(fingerprint='SHA256:stale'))
+        page.evaluate('delayedTest = true')
+        self.fill_valid(page)
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function('pendingTest !== null')
 
-        # First add fails after authentication with a rotated host key. The
-        # wizard must not leave its connect button busy in the hidden step 4.
-        self.configure_add_error_once(page, 'host_key_changed')
-        page.click('#wizardConnectBtn')
-        page.wait_for_function(
-            '(status) => wizardState.step === 2 && '
-            'wizardState.candidate && wizardState.candidate.status === status && '
-            "!document.getElementById('wizardTrustBody').hidden && "
-            '!wizardState.busy',
-            arg='changed')
-        self.assertEqual(len(self.calls(page, INSPECT)), 2)
-        self.assertTrue(page.locator('#wizardTrustChangedChecklist').is_visible())
-        self.assertTrue(page.locator('#wizardTrustContinue').is_disabled())
-
-        # Both explicit confirmations are required for the changed key.
-        page.evaluate('wizardTrustContinue()')
-        page.wait_for_timeout(50)
-        self.assertEqual(self.calls(page, CONFIRM), [])
-        page.check('#wizardTrustChangedVerified')
-        self.assertTrue(page.locator('#wizardTrustContinue').is_disabled())
-        page.evaluate('wizardTrustContinue()')
-        page.wait_for_timeout(50)
-        self.assertEqual(self.calls(page, CONFIRM), [])
-        page.check('#wizardTrustChangedReplace')
-        self.assertFalse(page.locator('#wizardTrustContinue').is_disabled())
-        page.click('#wizardTrustContinue')
-        page.wait_for_function('wizardState.step === 3')
-        self.assertEqual(len(self.calls(page, CONFIRM)), 1)
-
-        # Invalidation deliberately clears credentials; enter them again.
-        self.assertEqual(page.input_value('#wizardUser'), '')
-        self.assertEqual(page.input_value('#wizardPassword'), '')
-        self.drive_to_review(page)
-        self.assertFalse(page.locator('#wizardConnectBtn').is_disabled())
-        self.assertEqual(page.locator('#wizardConnectBtn').text_content().strip(),
-                         page.evaluate("_('wizard_connect_button')"))
-
-        page.click('#wizardConnectBtn')
-        page.wait_for_function("document.getElementById('wizardSuccess').hidden === false")
-        self.assertEqual(len(self.calls(page, ADD)), 2)
-        self.assertEqual(page.get_attribute('#wizardOpenServer', 'href'), '/server/7')
-
-    def wait_for_error_text(self, page, selector, message_key):
-        page.wait_for_function(
-            '(args) => { const el = document.querySelector(args[0]); '
-            'return el && !el.hidden && el.textContent === window._(args[1]); }',
-            arg=[selector, message_key])
-
-    def test_endpoint_change_invalidates_candidate_and_ignores_stale_inspect(self):
-        for field, value in (('#wizardHost', 'other.example.test'),
-                             ('#wizardPort', '2200')):
-            with self.subTest(field=field):
-                page = self.new_page()
-                self.configure_inspect(page, {
-                    'status': 'unknown', 'host': 'node.example.test', 'port': 2222,
-                    'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:unknown',
-                    'old_fingerprints': [], 'token': 'synthetic-token',
-                })
-                self.drive_to_trust(page)
-                # The address inputs are inside step 1, which is hidden while
-                # step 2 is active. Push the value through the real handler.
-                self.set_address_field(page, field, value)
-                page.wait_for_function('wizardState.step === 1')
-                self.assertIsNone(page.evaluate('wizardState.candidate'))
-                self.assertFalse(page.evaluate('wizardState.trustSatisfied'))
-                self.assertTrue(page.locator('#wizardTrustBody').is_hidden())
-                self.assertFalse(page.evaluate(
-                    "document.getElementById('wizardTrustConfirmWrap').hidden"))
-                self.assertFalse(page.is_checked('#wizardTrustVerified'))
-
-        # A response that was already in flight must not populate the UI after
-        # the endpoint changes.
-        page = self.new_page()
-        self.configure_inspect(page, {
-            'status': 'unknown', 'host': 'node.example.test', 'port': 2222,
-            'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:stale',
-            'old_fingerprints': [], 'token': 'stale-token',
-        })
-        page.evaluate('delayedInspect = true')
-        page.fill('#wizardHost', 'node.example.test')
-        page.fill('#wizardPort', '2222')
-        page.click('#wizardAddressNext')
-        page.wait_for_function('pendingInspect !== null')
-        self.set_address_field(page, '#wizardPort', '2200')
-        page.evaluate('pendingInspect.resolve()')
-        page.wait_for_function('pendingInspect === null')
+        page.fill('#enrollHost', 'other.example.test')
+        page.evaluate('pendingTest.resolve()')
+        page.wait_for_function('pendingTest === null')
         page.wait_for_timeout(100)
 
-        self.assertEqual(page.evaluate('wizardState.step'), 1)
-        self.assertIsNone(page.evaluate('wizardState.candidate'))
-        self.assertTrue(page.locator('#wizardTrustBody').is_hidden())
-        self.assertEqual(page.locator('#wizardTrustEndpoint').text_content(), '')
+        self.assertTrue(page.locator('#enrollAddBtn').is_disabled())
+        self.assertTrue(page.locator('#enrollSuccess').is_hidden())
+        self.assertTrue(page.locator('#enrollTestHint').is_visible())
 
-    def test_mobile_progress_and_no_horizontal_overflow(self):
+    def test_test_errors_are_mapped_to_readable_messages(self):
+        cases = {
+            'authentication_failed': 'enroll_error_auth',
+            'network_error': 'enroll_error_network',
+            'validation_error': 'enroll_error_validation',
+        }
+        for code, key in cases.items():
+            with self.subTest(error_code=code):
+                page = self.new_page()
+                self.configure_outcomes(page, {'error': {'error': code, 'error_code': code}})
+                self.fill_valid(page)
+                self.click(page, '#enrollTestBtn')
+                page.wait_for_function(
+                    '(key) => { const el = document.getElementById("enrollError");'
+                    ' return !el.hidden && el.textContent === window._(key); }',
+                    arg=key)
+                self.assertTrue(page.locator('#enrollAddBtn').is_disabled())
+                self.assertEqual(self.calls(page, ADD), [])
+
+    def test_mobile_layout_has_no_horizontal_overflow(self):
         page = self.new_page(viewport={'width': 375, 'height': 812})
         self.assertEqual(page.evaluate('window.innerWidth'), 375)
-        self.assertTrue(page.locator('#wizardProgressMobile').is_visible())
-        self.assertEqual(
-            page.evaluate("getComputedStyle(document.querySelector('.wizard-progress')).display"),
-            'none')
-        self.assertEqual(
-            page.locator('#wizardProgressMobile').text_content(),
-            page.evaluate("_('wizard_progress_mobile').replace('{current}', '1').replace('{total}', '4')"))
-        self.assert_no_horizontal_overflow(page)
-
-        self.configure_inspect(page, {
-            'status': 'unknown', 'host': 'node.example.test', 'port': 2222,
-            'algorithm': 'ssh-ed25519', 'fingerprint': 'SHA256:unknown',
-            'old_fingerprints': [], 'token': 'synthetic-token',
-        })
-        self.drive_to_trust(page)
-        self.assertEqual(
-            page.locator('#wizardProgressMobile').text_content(),
-            page.evaluate("_('wizard_progress_mobile').replace('{current}', '2').replace('{total}', '4')"))
+        self.configure_outcomes(page, self.changed_outcome())
+        self.fill_valid(page)
+        self.click(page, '#enrollTestBtn')
+        page.wait_for_function("document.getElementById('enrollChanged').hidden === false")
         self.assert_no_horizontal_overflow(page)
 
     def assert_no_horizontal_overflow(self, page):
