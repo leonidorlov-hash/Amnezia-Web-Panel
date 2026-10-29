@@ -956,5 +956,11 @@
     "enroll_test_success": "Connection successful. Host key {algorithm} {fingerprint} is {status}.",
     "enroll_test_success_pinned": "pinned on first use",
     "enroll_test_success_trusted": "already trusted",
-    "enroll_testing": "Testing connection..."
+    "enroll_testing": "Testing connection...",
+    "full_backup_warning": "Contains private VPN/SSH data. Keep this archive private and encrypted.",
+    "full_backup_scope": "Includes panel data, SSH trust, peer journals and recovery snapshots. Save Compose, environment/secrets and external certificates separately.",
+    "full_backup_offline": "Complete archives can only be restored offline after independent VPN-node reconciliation. The JSON restore below is a limited legacy operation.",
+    "legacy_json_backup": "Legacy JSON export (not a complete backup)",
+    "full_backup_busy": "State is busy or could not be read consistently. Wait for pending operations, then retry; inspect private storage if the error persists.",
+    "full_backup_error": "Backup could not be downloaded. Check administrator access and storage."
 }

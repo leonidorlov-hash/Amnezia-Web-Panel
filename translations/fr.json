@@ -956,5 +956,11 @@
     "enroll_test_success": "Connexion réussie. La clé d’hôte {algorithm} {fingerprint} est {status}.",
     "enroll_test_success_pinned": "épinglée à la première utilisation",
     "enroll_test_success_trusted": "déjà approuvée",
-    "enroll_testing": "Test de la connexion..."
+    "enroll_testing": "Test de la connexion...",
+    "full_backup_warning": "Contient des données VPN/SSH privées. Conservez cette archive privée et chiffrée.",
+    "full_backup_scope": "Inclut les données du panneau, la confiance SSH, les journaux des pairs et les instantanés de récupération. Sauvegardez séparément Compose, les secrets et les certificats externes.",
+    "full_backup_offline": "La restauration complète exige un arrêt et une vérification indépendante des nœuds VPN. La restauration JSON ci-dessous est limitée.",
+    "legacy_json_backup": "Ancien export JSON (sauvegarde incomplète)",
+    "full_backup_busy": "État occupé ou instantané cohérent indisponible. Attendez la fin des opérations et réessayez ; vérifiez le stockage privé si nécessaire.",
+    "full_backup_error": "Téléchargement impossible. Vérifiez les droits administrateur et le stockage."
 }

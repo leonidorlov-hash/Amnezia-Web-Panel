@@ -207,7 +207,7 @@ DATA_FILE = os.path.abspath(os.path.expanduser(
     os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
 ))
 ssh_trust.configure(DATA_FILE)
-CURRENT_VERSION = "v1.8.2"
+CURRENT_VERSION = "v1.8.3"
 
 # Custom protocol instance names: the rename modal caps input at 64 chars.
 CUSTOM_PROTOCOL_NAME_MAX = 64
@@ -1709,6 +1709,7 @@ def config_payloads(config_text, server=None, protocol=None):
 
 
 from peer_create import PeerCreateService, PeerCreateError
+from panel_backup import ArchiveJob, PRIVATE_HEADERS
 
 peer_creates = PeerCreateService(
     path=lambda: DATA_FILE + '.peer-creates.json',
@@ -3012,33 +3013,75 @@ async def run_auto_backups_if_due():
 
 
 def _scrape_server_traffic(server, sid, my_conns):
+    from collections import Counter
+    from managers.traffic_counters import counter
+    from peer_accounting import _protocol_scope
+
     server_updates = []
+    ssh = None
     try:
         ssh = get_ssh(server)
         ssh.connect()
-        for proto in ['awg', 'awg2', 'awg3', 'awg_legacy', 'xray', 'telemt', 'wireguard']:
-            if proto in server.get('protocols', {}):
+        # The manager resolves first-instance aliases to the same container.
+        # Query each physical scope once, retaining each link's full protocol.
+        scopes = {}
+        for proto, record in server.get('protocols', {}).items():
+            if (str(proto).split('__', 1)[0] in ('awg', 'awg2', 'awg3', 'awg_legacy', 'xray', 'telemt', 'wireguard')
+                    and isinstance(record, dict) and record.get('installed', True)):
+                scopes.setdefault(_protocol_scope(proto), proto)
+        owners = Counter((_protocol_scope(c['protocol']), c['client_id']) for c in my_conns)
+        for scope, proto in scopes.items():
+            try:
                 manager = get_protocol_manager(ssh, proto)
                 observed_at = time.time()
-                clients = _manager_call(manager, 'get_clients', proto)
-                client_bytes = {}
-                for c in clients:
-                    rx = c.get('userData', {}).get('dataReceivedBytes', 0)
-                    tx = c.get('userData', {}).get('dataSentBytes', 0)
-                    client_bytes[c.get('clientId')] = rx + tx
-                    
+                epoch = None
+                if scope[0] in ('awg', 'awg2', 'awg3', 'awg_legacy', 'wireguard'):
+                    snapshot = _manager_call(manager, 'get_traffic_snapshot', proto)
+                    epoch, peer_counters = snapshot['epoch'], snapshot['peers']
+                    if not isinstance(epoch, str) or not epoch:
+                        raise ValueError('Counter epoch missing')
+                else:
+                    # Other protocols keep their adapters, but missing, bool,
+                    # malformed or cached counters must not become zero either.
+                    peer_counters = {}
+                    for client in _manager_call(manager, 'get_clients', proto):
+                        ud = client.get('userData', {})
+                        if ud.get('traffic_valid', True):
+                            peer_counters[client.get('clientId')] = {
+                                'rx_bytes': ud.get('dataReceivedBytes'),
+                                'tx_bytes': ud.get('dataSentBytes'),
+                            }
                 for uc in my_conns:
-                    if uc['protocol'] == proto and uc['client_id'] in client_bytes:
-                        curr_bytes = client_bytes[uc['client_id']]
-                        server_updates.append({
-                            'id': uc['id'], 'user_id': uc['user_id'],
-                            'protocol': proto, 'client_id': uc['client_id'],
-                            'server_identity': traffic_server_identity(server),
-                            'bytes': curr_bytes, 'observed_at': observed_at,
-                        })
-        ssh.disconnect()
-    except Exception as e:
-        logger.error(f"Traffic sync err server {sid}: {e}")
+                    if _protocol_scope(uc['protocol']) != scope:
+                        continue
+                    if owners[(scope, uc['client_id'])] != 1:
+                        logger.warning('Traffic ownership ambiguous on server %s; sample skipped', sid)
+                        continue
+                    values = peer_counters.get(uc['client_id'], {})
+                    rx, tx = values.get('rx_bytes'), values.get('tx_bytes')
+                    if not counter(rx) or not counter(tx):
+                        continue
+                    sample = {
+                        'id': uc['id'], 'user_id': uc['user_id'],
+                        'protocol': uc['protocol'], 'client_id': uc['client_id'],
+                        'server_identity': traffic_server_identity(server),
+                        'bytes': rx + tx, 'observed_at': observed_at,
+                    }
+                    if epoch is not None:
+                        sample.update(rx_bytes=rx, tx_bytes=tx, counter_epoch=epoch)
+                    server_updates.append(sample)
+            except Exception:
+                # One unavailable instance must not starve the other instances.
+                # Never include arbitrary remote stderr or configurations.
+                logger.warning('Traffic snapshot unavailable on server %s protocol %s; baselines retained', sid, proto)
+    except Exception:
+        logger.warning('Traffic SSH unavailable on server %s; baselines retained', sid)
+    finally:
+        if ssh is not None:
+            try:
+                ssh.disconnect()
+            except Exception:
+                logger.warning('Traffic SSH disconnect failed on server %s', sid)
     return server_updates
 
 
@@ -7710,12 +7753,14 @@ def settings_page(request: Request):
     if not user:
         return RedirectResponse('/login')
     data = load_data()
+    backup_csrf = request.session.setdefault('backup_csrf', secrets.token_urlsafe(32)) if user['role'] == 'admin' else ''
     return tpl(
         request,
         'settings.html',
         settings=data.get('settings', {}),
         servers=data.get('servers', []),
         current_version=CURRENT_VERSION,
+        backup_csrf=backup_csrf,
         self_service_protocol_choices=self_service_protocol_choices(),
     )
 
@@ -8230,6 +8275,61 @@ def api_backup_download(request: Request):
     if not os.path.exists(DATA_FILE):
         return JSONResponse({'error': 'Data file not found'}, status_code=404)
     return FileResponse(DATA_FILE, media_type='application/json', filename='data.json')
+
+
+class PrivateBackupResponse(StreamingResponse):
+    def __init__(self, job):
+        self.job = job
+        job.file.seek(0, os.SEEK_END)
+        size = job.file.tell()
+        job.file.seek(0)
+        name = 'amnezia-panel-backup-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '.zip'
+        super().__init__(job.chunks(), media_type='application/zip', headers={
+            **PRIVATE_HEADERS, 'Content-Disposition': 'attachment; filename="' + name + '"',
+            'Content-Length': str(size)})
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.job.close()
+
+
+@app.post('/api/settings/backup/archive', tags=['Settings'])
+async def api_backup_archive(request: Request):
+    # Unlike the legacy JSON endpoint, a complete archive is admin-only.
+    if not _ssh_trust_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403, headers=PRIVATE_HEADERS)
+    bearer = not get_current_user(request) and request.headers.get('authorization', '').lower().startswith('bearer ')
+    expected = request.session.get('backup_csrf', '')
+    if not bearer and (not expected or not secrets.compare_digest(expected.encode(), request.headers.get('x-backup-csrf', '').encode())):
+        return JSONResponse({'error': 'CSRF check failed'}, status_code=403, headers=PRIVATE_HEADERS)
+    if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
+        return JSONResponse({'error': 'JSON request required'}, status_code=415, headers=PRIVATE_HEADERS)
+    job = ArchiveJob()
+    try:
+        # Bounded queue admission. No DATA_LOCK is held over an SSH operation.
+        async with peer_lifecycle_lock.snapshot_interlock():
+            async with DATA_LOCK:
+                if not _ssh_trust_admin(request):
+                    return JSONResponse({'error': 'Forbidden'}, status_code=403, headers=PRIVATE_HEADERS)
+                await _finish_locked_worker(lambda: job.create(
+                    DATA_FILE, ssh_trust.trust_path(), CURRENT_VERSION,
+                    journal_lock=peer_creates.journal.lock, trust_lock=ssh_trust.LOCK,
+                    system_trust=os.path.expanduser('~/.ssh/known_hosts')))
+        return PrivateBackupResponse(job)
+    except peer_lifecycle_lock.PeerLifecycleBusy:
+        job.close()
+        return JSONResponse({'error': 'State is busy; retry after pending operations finish.',
+                             'code': 'panel_backup_busy'}, status_code=503, headers=PRIVATE_HEADERS)
+    except asyncio.CancelledError:
+        job.close()
+        raise
+    except Exception:
+        job.close()
+        logger.warning('Complete panel backup unavailable; inspect private storage permissions/state')
+        return JSONResponse({'error': 'Complete backup could not be created. No partial archive was returned.',
+                             'code': 'panel_backup_unavailable'}, status_code=503, headers=PRIVATE_HEADERS)
 
 
 @app.post('/api/settings/backup/restore', tags=["Settings"])

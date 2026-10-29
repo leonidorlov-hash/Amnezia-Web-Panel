@@ -956,5 +956,11 @@
     "enroll_test_success": "连接成功。主机密钥 {algorithm} {fingerprint} 已{status}。",
     "enroll_test_success_pinned": "在首次使用时固定",
     "enroll_test_success_trusted": "受信任",
-    "enroll_testing": "正在测试连接..."
+    "enroll_testing": "正在测试连接...",
+    "full_backup_warning": "包含私密 VPN/SSH 数据。请私密且加密地保存此备份。",
+    "full_backup_scope": "包含面板数据、SSH 信任、节点操作日志和恢复快照。请单独保存 Compose、环境密钥及外部证书。",
+    "full_backup_offline": "完整恢复必须离线进行，并独立核对 VPN 节点状态。下方 JSON 恢复仅支持旧格式。",
+    "legacy_json_backup": "旧版 JSON 导出（非完整备份）",
+    "full_backup_busy": "状态正忙或无法取得一致快照。请等待操作完成后重试；若持续失败，请检查私有存储。",
+    "full_backup_error": "无法下载备份。请检查管理员权限和存储。"
 }

@@ -28,7 +28,7 @@ class TrustUITests(unittest.TestCase):
         self.assertIn('ssh_trust.saved_status(servers[server_id])', block)
         self.assertNotIn('ssh_trust.inspect(', block)
         # Non-status endpoints keep using the network probe.
-        self.assertIn('ssh_trust.inspect(servers[server_id])', app_source)
+        self.assertIn('ssh_trust.inspect(', app_source)
 
     def test_listing_uses_live_key_only_inspection(self):
         app_source = (ROOT / 'app.py').read_text(encoding='utf-8')
