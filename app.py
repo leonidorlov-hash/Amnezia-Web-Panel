@@ -207,7 +207,7 @@ DATA_FILE = os.path.abspath(os.path.expanduser(
     os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
 ))
 ssh_trust.configure(DATA_FILE)
-CURRENT_VERSION = "v1.8.3"
+CURRENT_VERSION = "v1.8.4"
 
 # Custom protocol instance names: the rename modal caps input at 64 chars.
 CUSTOM_PROTOCOL_NAME_MAX = 64
@@ -2426,6 +2426,18 @@ class ExitDnsRequest(BaseModel):
     enabled: bool = False
 
 
+class ExitFailoverRequest(BaseModel):
+    protocol: str = 'awg'
+    enabled: bool = False
+    backup_uids: Optional[List[str]] = None
+    check_interval_seconds: Optional[int] = None
+    failure_threshold: Optional[int] = None
+    failback_stable_seconds: Optional[int] = None
+    handshake_max_age_seconds: Optional[int] = None
+    auto_failback: Optional[bool] = None
+    probe_egress: Optional[bool] = None
+
+
 class SmartRouteOwnSubnetsRequest(BaseModel):
     cidrs: list = []
 
@@ -2446,6 +2458,7 @@ class SmartRouteEnableRequest(BaseModel):
 class SmartRouteDnsServersRequest(BaseModel):
     direct: str = '77.88.8.8'
     exit: str = '1.1.1.1'
+
 
 
 class Socks5SettingsRequest(BaseModel):
@@ -2892,6 +2905,7 @@ async def startup():
 
     # Start periodic background tasks
     asyncio.create_task(periodic_background_tasks())
+    asyncio.create_task(exit_failover_background_loop())
 
     # Re-apply public-port forwards on the fleet: hand-made iptables rules do
     # not survive reboots on their own, and only some hosts persist them.
@@ -3136,6 +3150,26 @@ async def periodic_background_tasks():
         await asyncio.sleep(600)
 
 
+FAILOVER_SCHEDULER_SECONDS = 15
+_exit_failover_loop_enabled = True
+
+
+async def exit_failover_background_loop():
+    """Health-check opt-in exit-link failovers. Per-instance interval lives on
+    the protocol record (default ~45s); this loop only wakes the scheduler."""
+    if not _exit_failover_loop_enabled:
+        return
+    await asyncio.sleep(20)
+    while True:
+        if not _exit_failover_loop_enabled:
+            return
+        try:
+            await exit_link_svc.run_failover_pass()
+        except Exception as e:
+            logger.error(f"Error in exit_failover_background_loop: {e}")
+        await asyncio.sleep(FAILOVER_SCHEDULER_SECONDS)
+
+
 # ======================== PAGE ROUTES ========================
 
 @app.get('/login', response_class=HTMLResponse, tags=["System Templates"])
@@ -3198,15 +3232,20 @@ def server_new_page(request: Request):
 
 
 @app.get('/server/{server_id}', response_class=HTMLResponse, tags=["System Templates"])
-def server_detail(request: Request, server_id: int):
+async def server_detail(request: Request, server_id: int):
     user = get_current_user(request)
     if not user:
         return RedirectResponse(url='/login', status_code=302)
     if user['role'] not in ('admin', 'support'):
         return RedirectResponse(url='/my', status_code=302)
-    data = load_data()
-    if server_id >= len(data['servers']):
-        return RedirectResponse(url='/')
+    async with DATA_LOCK:
+        data = load_data()
+        if server_id < 0 or server_id >= len(data['servers']):
+            return RedirectResponse(url='/')
+        # Startup normally migrates these. Also cover legacy state restored
+        # while running, before stamping an actionable UID into the page.
+        if backfill_server_uids(data['servers']):
+            save_data(data)
     server = data['servers'][server_id]
     users_list = data.get('users', [])
     return tpl(request, 'server.html', server=server, server_id=server_id, users=users_list)
@@ -4125,19 +4164,23 @@ def _rkn_record(server):
     return server.get('rknblock') or {}
 
 
-def _rkn_server_index(data, server_id, server_uid):
+def _rkn_server_index(data, server_id, server_uid, expected=None):
     """Resolve a server after a long SSH call: uid survives reorder/delete,
-    the positional index is only a fallback for legacy records."""
-    if server_uid:
-        for idx, srv in enumerate(data.get('servers', [])):
-            if srv.get('uid') == server_uid:
-                return idx
-    if isinstance(server_id, int) and 0 <= server_id < len(data.get('servers', [])):
-        return server_id
-    return None
+    legacy index-only callers still need one persisted, unambiguous UID."""
+    servers = data.get('servers', [])
+    if server_uid is None and isinstance(server_id, int) and 0 <= server_id < len(servers):
+        server_uid = servers[server_id].get('uid')
+    matches = [idx for idx, srv in enumerate(servers) if server_uid and srv.get('uid') == server_uid]
+    if len(matches) != 1:
+        return None
+    idx = matches[0]
+    if expected is not None and any(servers[idx].get(k) != expected.get(k)
+                                   for k in ('uid', 'host', 'ssh_port', 'username', 'password', 'private_key')):
+        return None
+    return idx
 
 
-async def _rkn_store_record(server_id, server_uid, mutate):
+async def _rkn_store_record(server_id, server_uid, mutate, expected=None):
     """Reload under DATA_LOCK after SSH and persist only the RKN record.
 
     RKN install/enable/options take seconds and the old code saved a whole
@@ -4148,7 +4191,7 @@ async def _rkn_store_record(server_id, server_uid, mutate):
     """
     async with DATA_LOCK:
         data = load_data()
-        idx = _rkn_server_index(data, server_id, server_uid)
+        idx = _rkn_server_index(data, server_id, server_uid, expected)
         if idx is None:
             return None
         rec = dict(data['servers'][idx].get('rknblock') or {})
@@ -4158,10 +4201,10 @@ async def _rkn_store_record(server_id, server_uid, mutate):
         return rec
 
 
-async def _rkn_drop_record(server_id, server_uid):
+async def _rkn_drop_record(server_id, server_uid, expected=None):
     async with DATA_LOCK:
         data = load_data()
-        idx = _rkn_server_index(data, server_id, server_uid)
+        idx = _rkn_server_index(data, server_id, server_uid, expected)
         if idx is None:
             return False
         data['servers'][idx].pop('rknblock', None)
@@ -4171,14 +4214,18 @@ async def _rkn_drop_record(server_id, server_uid):
 
 async def _rkn_ssh_run(server, cmd, timeout):
     ssh = await asyncio.to_thread(get_ssh, server)
-    await asyncio.to_thread(ssh.connect)
     try:
+        await asyncio.to_thread(ssh.connect)
+        if _rkn_server_index(load_data(), None, server.get('uid'), server) is None:
+            return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
         out, err, code = await asyncio.to_thread(ssh.run_sudo_command, cmd, timeout)
     finally:
         try:
             ssh.disconnect()
         except Exception:
             pass
+    if _rkn_server_index(load_data(), None, server.get('uid'), server) is None:
+        return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
     if code != 0:
         return JSONResponse({'error': f'command failed: {(err or out or "").strip()[-500:]}'},
                             status_code=500)
@@ -4186,14 +4233,18 @@ async def _rkn_ssh_run(server, cmd, timeout):
 
 
 @app.post('/api/servers/{server_id}/rknblock/install', tags=["Servers"])
-async def api_rknblock_install(request: Request, server_id: int):
+@serialize_peer_lifecycle
+async def api_rknblock_install(request: Request, server_id: int, server_uid: str | None = None):
     """Install the RKN/VK network blocking app (rkn-extra-block contour)."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
+    server = dict(data['servers'][server_id])
+    if _rkn_record(server).get('installed'):
+        return JSONResponse({'error': 'App is already installed; refresh its status'}, status_code=409)
     server_uid = server.get('uid')
     err = await _rkn_ssh_run(server, RKN_INSTALL_CMD, 420)
     if err is not None:
@@ -4204,7 +4255,7 @@ async def api_rknblock_install(request: Request, server_id: int):
         rec['enabled'] = True
         rec['last_error'] = None
 
-    rec = await _rkn_store_record(server_id, server_uid, mark)
+    rec = await _rkn_store_record(server_id, server_uid, mark, server)
     if rec is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
     RKN_FLAG_CACHE.clear()
@@ -4212,19 +4263,21 @@ async def api_rknblock_install(request: Request, server_id: int):
 
 
 @app.post('/api/servers/{server_id}/rknblock/uninstall', tags=["Servers"])
-async def api_rknblock_uninstall(request: Request, server_id: int):
+@serialize_peer_lifecycle
+async def api_rknblock_uninstall(request: Request, server_id: int, server_uid: str | None = None):
     """Fully remove the blocking contour: rules, sets, units, scripts, logs."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
+    server = dict(data['servers'][server_id])
     server_uid = server.get('uid')
     err = await _rkn_ssh_run(server, _rkn_run_cmd('uninstall'), 180)
     if err is not None:
         return err
-    if not await _rkn_drop_record(server_id, server_uid):
+    if not await _rkn_drop_record(server_id, server_uid, server):
         return JSONResponse({'error': 'Server not found'}, status_code=404)
     RKN_FLAG_CACHE.clear()
     return {'status': 'success', 'installed': False}
@@ -4235,14 +4288,16 @@ class RknBlockEnableRequest(BaseModel):
 
 
 @app.post('/api/servers/{server_id}/rknblock/enable', tags=["Servers"])
-async def api_rknblock_enable(request: Request, server_id: int, req: RknBlockEnableRequest):
+@serialize_peer_lifecycle
+async def api_rknblock_enable(request: Request, server_id: int, req: RknBlockEnableRequest, server_uid: str | None = None):
     """Start or stop the blocking contour (rules jump in/out; lists stay)."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
+    server = dict(data['servers'][server_id])
     if not _rkn_record(server).get('installed'):
         return JSONResponse({'error': 'App is not installed'}, status_code=409)
     server_uid = server.get('uid')
@@ -4255,7 +4310,7 @@ async def api_rknblock_enable(request: Request, server_id: int, req: RknBlockEna
         rec['enabled'] = bool(req.enabled)
         rec['last_error'] = None
 
-    rec = await _rkn_store_record(server_id, server_uid, mark)
+    rec = await _rkn_store_record(server_id, server_uid, mark, server)
     if rec is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
     RKN_FLAG_CACHE.clear()
@@ -4263,14 +4318,16 @@ async def api_rknblock_enable(request: Request, server_id: int, req: RknBlockEna
 
 
 @app.post('/api/servers/{server_id}/rknblock/update', tags=["Servers"])
-async def api_rknblock_update(request: Request, server_id: int):
+@serialize_peer_lifecycle
+async def api_rknblock_update(request: Request, server_id: int, server_uid: str | None = None):
     """Re-download the C24Be lists and atomically reload the ipset sets."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
+    server = dict(data['servers'][server_id])
     if not _rkn_record(server).get('installed'):
         return JSONResponse({'error': 'App is not installed'}, status_code=409)
     err = await _rkn_ssh_run(server, _rkn_run_cmd('update'), 300)
@@ -4291,14 +4348,16 @@ class RknBlockOptionsRequest(BaseModel):
 
 
 @app.post('/api/servers/{server_id}/rknblock/options', tags=["Servers"])
-async def api_rknblock_options(request: Request, server_id: int, req: RknBlockOptionsRequest):
+@serialize_peer_lifecycle
+async def api_rknblock_options(request: Request, server_id: int, req: RknBlockOptionsRequest, server_uid: str | None = None):
     """Set per-direction block/log flags on the host contour (chains rebuilt only)."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
+    server = dict(data['servers'][server_id])
     if not _rkn_record(server).get('installed'):
         return JSONResponse({'error': 'App is not installed'}, status_code=409)
     values = req.model_dump()
@@ -4313,7 +4372,7 @@ async def api_rknblock_options(request: Request, server_id: int, req: RknBlockOp
         rec['flags'] = values
         rec['last_error'] = None
 
-    rec = await _rkn_store_record(server_id, server_uid, mark)
+    rec = await _rkn_store_record(server_id, server_uid, mark, server)
     if rec is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
     RKN_FLAG_CACHE.clear()
@@ -4422,8 +4481,10 @@ def _parse_rkn_scan_output(out, flag_enabled):
 async def _fetch_rkn_scan_output(server):
     """SSH to a server and fetch the rkn-extra-block status line + scan log tail."""
     ssh = await asyncio.to_thread(get_ssh, server)
-    await asyncio.to_thread(ssh.connect)
     try:
+        await asyncio.to_thread(ssh.connect)
+        if _rkn_server_index(load_data(), None, server.get('uid'), server) is None:
+            raise ValueError('Server identity changed')
         out, _, _ = await asyncio.to_thread(ssh.run_sudo_command, RKN_SCAN_SSH_CMD, 60)
     finally:
         try:
@@ -4434,20 +4495,40 @@ async def _fetch_rkn_scan_output(server):
 
 
 @app.get('/api/servers/{server_id}/rkn_scans', tags=["Servers"])
-async def api_rkn_scans(request: Request, server_id: int):
+async def api_rkn_scans(request: Request, server_id: int, server_uid: str | None = None):
     """Compact scan statistics collected hourly by rkn-agent on the server."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
-    out = await _fetch_rkn_scan_output(server)
+    server = dict(data['servers'][server_id])
+    identity = [server.get(k) for k in ('uid', 'host', 'ssh_port', 'username')]
+    previous_record = dict(server.get('rknblock') or {})
+    available = True
+    try:
+        out = await _fetch_rkn_scan_output(server)
+        available = '===LOG===' in (out or '')
+    except Exception:
+        out, available = '', False
+    current = load_data()
+    idx = _rkn_server_index(current, server_id, identity[0])
+    if idx is None:
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    server = current['servers'][idx]
+    if [server.get(k) for k in ('uid', 'host', 'ssh_port', 'username')] != identity:
+        return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
+    if (server.get('rknblock') or {}) != previous_record:
+        out, available = '', False  # A mutation committed while the probe was running.
     record = server.get('rknblock') or {}
     installed = bool(record.get('installed'))
     parsed = _parse_rkn_scan_output(out, installed)
-    live_on = parsed.get('agent_state') == 'on'
+    installed = installed or parsed.get('agent_state') in ('on', 'off')
+    live_on = available and parsed.get('agent_state') == 'on'
     parsed['installed'] = installed
+    parsed['available'] = available and (not installed or parsed.get('agent_state') != 'unknown')
+    parsed['server_uid'] = server.get('uid')
     parsed['enabled'] = bool(record.get('enabled', True)) if installed else False
     parsed['running'] = bool(installed and live_on)
     parsed['healthy'] = bool(installed and live_on
@@ -4458,27 +4539,20 @@ async def api_rkn_scans(request: Request, server_id: int):
 
 
 @app.post('/api/servers/{server_id}/rkn_scans/clear', tags=["Servers"])
-async def api_rkn_scans_clear(request: Request, server_id: int):
+@serialize_peer_lifecycle
+async def api_rkn_scans_clear(request: Request, server_id: int, server_uid: str | None = None):
     """Truncate the remote rkn-scans.json so the admin can acknowledge sightings."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    if server_id >= len(data['servers']):
+    server_id = _rkn_server_index(data, server_id, server_uid)
+    if server_id is None:
         return JSONResponse({'error': 'Server not found'}, status_code=404)
-    server = data['servers'][server_id]
-    ssh = await asyncio.to_thread(get_ssh, server)
-    await asyncio.to_thread(ssh.connect)
-    try:
-        # Новые версии: переносят горизонт сбора (старое не подхватится агентом).
-        # Старые: просто обнулят файл — событие вернётся после часового прогона агента.
-        await asyncio.to_thread(
-            ssh.run_sudo_command,
-            'rkn-extra-block clearscans 2>/dev/null || : > /var/log/rkn-scans.json', 30)
-    finally:
-        try:
-            ssh.disconnect()
-        except Exception:
-            pass
+    server = dict(data['servers'][server_id])
+    error = await _rkn_ssh_run(server,
+        'rkn-extra-block clearscans 2>/dev/null || : > /var/log/rkn-scans.json', 30)
+    if error is not None:
+        return error
     RKN_FLAG_CACHE.pop(server_id, None)
     return {'status': 'cleared'}
 
@@ -4589,6 +4663,9 @@ def api_check_server(request: Request, server_id: int):
                         merged.setdefault(key, db_proto[key])
             if protocol_base(proto) in AWG_PROTOCOLS and db_proto.get('exit_link'):
                 merged['exit_link'] = db_proto['exit_link']
+            if protocol_base(proto) in AWG_PROTOCOLS and db_proto.get('exit_failover'):
+                merged['exit_failover'] = exit_link_svc.failover_view(
+                    data, db_proto, server.get('uid'))
             return merged
 
         def should_preserve_saved_protocol(proto, result=None, err=None):
@@ -5237,6 +5314,49 @@ async def api_exit_link_check_egress(request: Request, server_id: int, req: Prot
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
+@app.post('/api/servers/{server_id}/exit-link/failover', tags=["Protocols"])
+async def api_exit_link_failover(request: Request, server_id: int, req: ExitFailoverRequest):
+    """Opt-in automatic failover for an AWG instance already linked to an
+    exit node. Disabled by default; backups are addressed by server uid."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        payload = req.model_dump()
+        protocol = payload.pop('protocol')
+        fields = {key: value for key, value in payload.items()
+                  if value is not None or key == 'enabled'}
+        return await exit_link_svc.configure_failover(server_id, protocol, **fields)
+    except ExitLinkError as e:
+        return _exit_link_error(e)
+    except Exception as e:
+        logger.exception("Error saving exit failover settings")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/exit-link/failover/check', tags=["Protocols"])
+async def api_exit_link_failover_check(request: Request, server_id: int, req: ProtocolRequest):
+    """Run one failover health-check now (same work as the background tick)."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        result = await exit_link_svc.tick_failover(server_id, req.protocol)
+        data = load_data()
+        try:
+            entry, rec = exit_link_svc._entry(data, server_id, req.protocol)
+        except ExitLinkError as e:
+            return {**result, 'exit_failover': None, 'error': e.code}
+        return {
+            **result,
+            'status': 'success',
+            'exit_failover': exit_link_svc.failover_view(data, rec, entry.get('uid')),
+        }
+    except ExitLinkError as e:
+        return _exit_link_error(e)
+    except Exception as e:
+        logger.exception("Error running exit failover check")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
 @app.post('/api/servers/{server_id}/smartroute/install', tags=["Protocols"])
 async def api_smartroute_install(request: Request, server_id: int):
     """Install the host-side Smart Route updater (lists + systemd timer)."""
@@ -5817,17 +5937,25 @@ def api_container_toggle(request: Request, server_id: int, req: ContainerToggleR
 
 
 @app.post('/api/servers/{server_id}/server_config', tags=["Protocols"])
-def api_server_config(request: Request, server_id: int, req: ProtocolRequest):
+@serialize_peer_lifecycle
+def api_server_config(request: Request, server_id: int, req: ProtocolRequest, server_uid: str | None = None):
     """Get the raw server-side WireGuard/Xray configuration."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    ssh = None
     try:
         data = load_data()
-        if server_id >= len(data['servers']):
+        if server_id < 0 or server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         server = data['servers'][server_id]
+        if server_uid is not None and server.get('uid') != server_uid:
+            return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
         ssh = get_ssh(server)
         ssh.connect()
+        current = load_data()
+        if (server_id >= len(current['servers']) or
+                traffic_server_identity(current['servers'][server_id]) != traffic_server_identity(server)):
+            return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
         if protocol_base(req.protocol) == 'xray':
             from managers.xray_manager import XrayManager
             mgr = XrayManager(ssh, req.protocol)
@@ -5849,11 +5977,20 @@ def api_server_config(request: Request, server_id: int, req: ProtocolRequest):
         else:
             mgr = AWGManager(ssh)
             config = mgr._get_server_config(req.protocol)
-        ssh.disconnect()
+        latest = load_data()
+        if (server_id >= len(latest['servers']) or
+                traffic_server_identity(latest['servers'][server_id]) != traffic_server_identity(server)):
+            return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
         return {'config': config}
     except Exception as e:
         logger.exception("Error getting server config")
         return JSONResponse({'error': str(e)}, status_code=500)
+    finally:
+        if ssh is not None:
+            try:
+                ssh.disconnect()
+            except Exception:
+                logger.warning('Config session disconnect failed')
 
 
 @app.post('/api/servers/{server_id}/ssh_cooldown', tags=["Servers"])
@@ -6381,20 +6518,133 @@ def api_wgeasy_import(request: Request, server_id: int, req: WgEasyImportRequest
 
 @app.post('/api/servers/{server_id}/server_config/save', tags=["Protocols"])
 @serialize_peer_lifecycle
-def api_server_config_save(request: Request, server_id: int, req: ServerConfigSaveRequest):
+def api_server_config_save(request: Request, server_id: int, req: ServerConfigSaveRequest, server_uid: str | None = None):
     """Save the raw server-side WireGuard/Xray configuration and apply changes."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    ssh = None
     try:
         data = load_data()
         if server_id < 0 or server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         guard = _traffic_removal_guard(data, server_id=server_id, protocol=req.protocol, include_archived=True)
-        if guard is not None:
-            return guard
         server = data['servers'][server_id]
+        if server_uid is not None and server.get('uid') != server_uid:
+            return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
+        base = protocol_base(req.protocol)
+        from peer_accounting import _protocol_scope
+        scope = _protocol_scope(req.protocol)
+        def ownership(state):
+            # Ignore live traffic deltas, but not replacement owners/peers,
+            # archived receipts or changes to the protected routing scope.
+            return (
+                [(c.get('id'), c.get('user_id'), c.get('client_id'), c.get('protocol'))
+                 for c in state.get('user_connections', [])
+                 if c.get('server_id') == server_id and _protocol_scope(c.get('protocol')) == scope],
+                [r for r in state.get('accounting_recoveries', [])
+                 if r['scope']['server_uid'] == server.get('uid')
+                 and _protocol_scope(r['connection'].get('protocol')) == scope],
+                [(key, info.get('exit_link')) for key, info in state['servers'][server_id].get('protocols', {}).items()
+                 if _protocol_scope(key) == scope])
+        original_ownership = ownership(data)
+        protected = guard is not None or any(info.get('exit_link') for key, info in server.get('protocols', {}).items()
+                                              if _protocol_scope(key) == scope)
+        def parsed(content):
+            # Compare parsed values, never an edited text with peers/commands
+            # stripped out. A no-op needs no write, reload or counter reset.
+            if base == 'xray':
+                def unique(pairs):
+                    value = {}
+                    for key, item in pairs:
+                        if key in value:
+                            raise ValueError('Duplicate JSON key')
+                        value[key] = item
+                    return value
+                value = json.loads(content, object_pairs_hook=unique)
+                if not isinstance(value, dict) or not value:
+                    raise ValueError('Invalid JSON configuration')
+            elif base == 'telemt':
+                import tomllib
+                value = tomllib.loads(content)
+                if not value:
+                    raise ValueError('Invalid TOML configuration')
+            elif base in AWG_PROTOCOLS or base == 'wireguard':
+                value = []
+                for line in content.splitlines():
+                    line = line.strip()
+                    if line.startswith('#') and re.match(r'^#\s*DNS\s*=', line):
+                        line = line.lstrip('#').strip()  # Client defaults are meaningful too.
+                    elif not line or line.startswith('#'):
+                        continue
+                    if line in ('[Interface]', '[Peer]'):
+                        value.append([line, {}])
+                    else:
+                        if not value or '=' not in line:
+                            raise ValueError('Invalid WireGuard configuration')
+                        key, item = (s.strip() for s in line.split('=', 1))
+                        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9]*', key) or not item:
+                            raise ValueError('Invalid WireGuard setting')
+                        value[-1][1].setdefault(key, []).append(item)
+                if (not value or value[0][0] != '[Interface]'
+                        or sum(section == '[Interface]' for section, _ in value) != 1
+                        or len(value[0][1].get('PrivateKey', [])) != 1
+                        or any(len(fields.get('PublicKey', [])) != 1 for section, fields in value[1:])):
+                    raise ValueError('Incomplete WireGuard configuration')
+            else:
+                raise ValueError('No safe comparison for this protocol')
+            return json.dumps(value, sort_keys=True, allow_nan=False, separators=(',', ':'))
+
+        if protected:
+            try:
+                proposed = parsed(req.config)
+            except (ValueError, TypeError):
+                return JSONResponse({'error': 'Invalid or ambiguous configuration; accounted peers and exit links were not changed.',
+                                     'code': 'traffic_finalization_required'}, status_code=409)
         ssh = get_ssh(server)
         ssh.connect()
+        # Lifecycle serialization excludes cooperating peer/inventory writes.
+        # Recheck current identity/ownership after the potentially slow connect.
+        current = load_data()
+        if (server_id >= len(current['servers']) or
+                traffic_server_identity(current['servers'][server_id]) != traffic_server_identity(server)):
+            return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
+        if ownership(current) != original_ownership:
+            return JSONResponse({'error': 'Accounting ownership or exit link changed; refresh the configuration',
+                                 'code': 'traffic_finalization_required'}, status_code=409)
+        current_guard = _traffic_removal_guard(current, server_id=server_id, protocol=req.protocol, include_archived=True)
+        if not protected and current_guard is not None:
+            return current_guard
+        if not protected and any(info.get('exit_link') for key, info in current['servers'][server_id].get('protocols', {}).items()
+                                 if _protocol_scope(key) == scope):
+            return JSONResponse({'error': 'Exit link changed; refresh the configuration'}, status_code=409)
+        if protected:
+            mgr = get_protocol_manager(ssh, req.protocol)
+            if base == 'xray':
+                # Read the running container's raw JSON: the manager's parsed
+                # getter collapses duplicate keys and may fall back to a host copy.
+                actual, _, code = ssh.run_sudo_command(
+                    f'docker exec {shlex.quote(mgr.container_name)} cat {shlex.quote(mgr._config_path())}')
+                if code != 0:
+                    actual = ''
+            elif base in ('wireguard', 'telemt'):
+                actual = mgr._get_server_config()
+            else:
+                actual = mgr._get_server_config(req.protocol)
+            latest = load_data()
+            if (server_id >= len(latest['servers']) or
+                    traffic_server_identity(latest['servers'][server_id]) != traffic_server_identity(server)):
+                return JSONResponse({'error': 'Server identity changed; refresh the inventory'}, status_code=409)
+            if ownership(latest) != original_ownership:
+                return JSONResponse({'error': 'Accounting ownership or exit link changed; refresh the configuration',
+                                     'code': 'traffic_finalization_required'}, status_code=409)
+            try:
+                unchanged = parsed(actual) == proposed
+            except (ValueError, TypeError):
+                unchanged = False
+            if unchanged:
+                return {'status': 'success', 'unchanged': True}
+            return JSONResponse({'error': 'Applying this configuration may restart the protocol and reset peer counters. A counter-preserving apply procedure is required.',
+                                 'code': 'traffic_finalization_required'}, status_code=409)
         if protocol_base(req.protocol) == 'xray':
             from managers.xray_manager import XrayManager
             mgr = XrayManager(ssh, req.protocol)
@@ -6402,7 +6652,6 @@ def api_server_config_save(request: Request, server_id: int, req: ServerConfigSa
             try:
                 data_json = _json.loads(req.config)
             except Exception as e:
-                ssh.disconnect()
                 return JSONResponse({'error': f'Invalid JSON format: {str(e)}'}, status_code=400)
             mgr._save_server_json(data_json)
         elif protocol_base(req.protocol) == 'telemt':
@@ -6420,11 +6669,16 @@ def api_server_config_save(request: Request, server_id: int, req: ServerConfigSa
         else:
             mgr = AWGManager(ssh)
             mgr.save_server_config(req.protocol, req.config)
-        ssh.disconnect()
         return {'status': 'success'}
     except Exception as e:
         logger.exception("Error saving server config")
         return JSONResponse({'error': str(e)}, status_code=500)
+    finally:
+        if ssh is not None:
+            try:
+                ssh.disconnect()
+            except Exception:
+                logger.warning('Config session disconnect failed')
 
 
 
