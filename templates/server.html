@@ -172,12 +172,19 @@
     .awg-plugin-updated { color: var(--success); font-weight: 700; }
     .awg-plugin-log { font-family: 'SF Mono', 'Fira Code', monospace; font-size: .72rem; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: var(--space-sm); max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
     .awg-plugin-stage { color: var(--text-muted); }
+    .awg-plugin-details { margin-top: var(--space-sm); }
+    .awg-plugin-details > summary { cursor: pointer; color: var(--text-muted); font-size: .8rem; user-select: none; list-style: none; }
+    .awg-plugin-details > summary::-webkit-details-marker { display: none; }
+    .awg-plugin-details > summary::before { content: '▸'; display: inline-block; width: 1em; transition: transform var(--transition-fast); }
+    .awg-plugin-details[open] > summary::before { transform: rotate(90deg); }
+    .awg-plugin-details > summary:hover { color: var(--text-primary); }
+    .awg-plugin-details[open] > summary { margin-bottom: 6px; }
     /* Progress: the bar creeps inside the current stage so a multi-minute
        DKMS build never looks frozen. */
     .awg-progress { margin-top: var(--space-sm); }
     .awg-progress-head { display: flex; justify-content: space-between; align-items: baseline; font-size: .8rem; color: var(--text-muted); margin-bottom: 6px; }
     .awg-progress-percent { font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
-    .awg-progress-track { height: 8px; border-radius: 999px; background: var(--bg-primary); border: 1px solid var(--border-color); overflow: hidden; }
+    .awg-progress-track { height: 4px; border-radius: 999px; background: var(--bg-primary); border: 1px solid var(--border-color); overflow: hidden; }
     .awg-progress-fill { height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--success)); transition: width .5s ease; position: relative; overflow: hidden; }
     .awg-progress-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .35), transparent); transform: translateX(-100%); animation: awgProgressShimmer 1.6s infinite; }
     @keyframes awgProgressShimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
@@ -417,13 +424,23 @@
             }
             block.appendChild(versions);
 
+            // "What changed" is a spoiler that loads its content on first open.
+            const changelog = awgPluginElement('details', 'awg-plugin-details');
+            changelog.id = 'awgChangelogBox-' + component;
+            changelog.appendChild(awgPluginElement('summary', '', labels.whats_new));
+            const changelogBody = awgPluginElement('div', 'awg-plugin-log awg-plugin-changelog', '…');
+            changelog.appendChild(changelogBody);
+            changelog.addEventListener('toggle', () => {
+                if (changelog.open && !changelog.dataset.loaded) {
+                    changelog.dataset.loaded = '1';
+                    loadAwgPluginChangelog(component, info.available, changelogBody);
+                }
+            });
+            block.appendChild(changelog);
+
             const actions = awgPluginElement('div', 'flex gap-sm');
             actions.style.marginTop = 'var(--space-sm)';
             if (info.update_available && info.available) {
-                const changelog = awgPluginElement('button', 'btn btn-secondary btn-sm', labels.whats_new);
-                changelog.type = 'button';
-                changelog.onclick = () => showAwgPluginChangelog(component, info.available, block);
-                actions.appendChild(changelog);
                 const run = awgPluginElement('button', 'btn btn-primary btn-sm', labels.update_btn);
                 run.type = 'button';
                 run.dataset.component = component;
@@ -431,7 +448,7 @@
                 run.onclick = () => startAwgPluginUpdate(component, run);
                 actions.appendChild(run);
             }
-            block.appendChild(actions);
+            if (actions.childNodes.length) block.appendChild(actions);
             const progress = awgPluginElement('div', 'awg-plugin-progress hidden');
             progress.id = 'awgPluginProgress-' + component;
             block.appendChild(progress);
@@ -441,14 +458,9 @@
         });
     }
 
-    async function showAwgPluginChangelog(component, version, block) {
+    async function loadAwgPluginChangelog(component, version, box) {
         const labels = awgPluginLabel();
-        let box = block.querySelector('.awg-plugin-changelog');
-        if (!box) {
-            box = awgPluginElement('div', 'awg-plugin-log awg-plugin-changelog');
-            box.style.marginTop = 'var(--space-sm)';
-            block.appendChild(box);
-        }
+        if (!box || !version) return;
         box.textContent = '…';
         try {
             const data = await apiCall('/api/servers/{{ server_id }}/awg-plugin/changelog?component=' +
@@ -510,10 +522,16 @@
         progress.appendChild(track);
         host.appendChild(progress);
         host.appendChild(awgPluginElement('div', 'awg-plugin-stage', labels.running));
+        // The journal is a spoiler: collapsed by default so a long build does
+        // not push the rest of the modal away.
+        const logBox = awgPluginElement('details', 'awg-plugin-details');
+        logBox.id = 'awgPluginLogBox-' + component;
+        logBox.appendChild(awgPluginElement('summary', '', labels.log));
         const log = awgPluginElement('div', 'awg-plugin-log');
         log.id = 'awgPluginLog-' + component;
         log.setAttribute('aria-live', 'polite');
-        host.appendChild(log);
+        logBox.appendChild(log);
+        host.appendChild(logBox);
         const actions = awgPluginElement('div', 'flex gap-sm');
         actions.style.marginTop = 'var(--space-sm)';
         const cancel = awgPluginElement('button', 'btn btn-secondary btn-sm', labels.cancel);
@@ -638,6 +656,11 @@
             if (cancelButton) cancelButton.remove();
             if (data.state === 'success') {
                 setAwgProgress(component, 10, 10, 100, false);
+            }
+            if (data.state === 'failed' || data.state === 'cancelled') {
+                // Show the reason without an extra click.
+                const logBox = document.getElementById('awgPluginLogBox-' + component);
+                if (logBox) logBox.open = true;
             }
             if (data.state === 'success' || data.state === 'manual_step_required') {
                 await loadAwgPluginStatus();

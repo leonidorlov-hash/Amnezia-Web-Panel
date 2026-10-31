@@ -997,7 +997,7 @@
   "awg_plugin_intro": "Ces composants font fonctionner les tunnels AmneziaWG sur ce serveur. Ils sont mis à jour indépendamment.",
   "awg_plugin_loading": "Vérification des versions…",
   "awg_plugin_kernel_module": "Module noyau",
-  "awg_plugin_kernel_module_desc": "Module du noyau Linux : moins de surcharge. Nécessite les en-têtes du noyau en cours et une compilation DKMS. La mise à jour peut interrompre brièvement les tunnels.",
+  "awg_plugin_kernel_module_desc": "Module noyau Linux : environ 50 à 70 % de charge CPU en moins que l'implémentation en espace utilisateur à haut débit.",
   "awg_plugin_userspace": "Espace utilisateur · amneziawg-go",
   "awg_plugin_userspace_desc": "Implémentation en espace utilisateur dans un conteneur. Ne nécessite pas le module noyau. La mise à jour reconstruit l'image et recrée le conteneur en restaurant sa configuration et ses pairs.",
   "awg_plugin_installed": "Installé",

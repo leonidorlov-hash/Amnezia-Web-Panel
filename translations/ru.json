@@ -997,7 +997,7 @@
   "awg_plugin_intro": "Эти компоненты обеспечивают работу туннелей AmneziaWG на сервере. Обновляются независимо друг от друга.",
   "awg_plugin_loading": "Проверка версий…",
   "awg_plugin_kernel_module": "Kernel module",
-  "awg_plugin_kernel_module_desc": "Модуль ядра Linux: меньше накладных расходов. Нужны заголовки текущего ядра и сборка DKMS. Обновление может кратко прервать туннели.",
+  "awg_plugin_kernel_module_desc": "Модуль ядра Linux: примерно на 50–70% меньше нагрузка на CPU, чем у userspace-варианта, при высокой скорости.",
   "awg_plugin_userspace": "Userspace · amneziawg-go",
   "awg_plugin_userspace_desc": "Реализация в userspace внутри контейнера. Не требует модуля ядра. При обновлении образ пересобирается, контейнер пересоздаётся, конфигурация и пиры восстанавливаются.",
   "awg_plugin_installed": "Установлено",

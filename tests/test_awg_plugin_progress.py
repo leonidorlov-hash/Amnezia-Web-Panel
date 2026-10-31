@@ -11,6 +11,7 @@ finishes with an in-memory fake updater.
 
 import asyncio
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -241,6 +242,85 @@ class AwgPluginProgressTests(unittest.TestCase):
         self.assertIn("replace('{step}'", html)
         self.assertIn("replace('{total}'", html)
 
+    def test_progress_track_is_thin(self):
+        """A 4px rail keeps the header compact; 8px looked like a second card."""
+        html = TEMPLATE.read_text(encoding='utf-8')
+        rules = re.findall(r'\.awg-progress-track\s*\{([^}]*)\}', html)
+        self.assertTrue(rules, 'missing .awg-progress-track rule')
+        track_rule = next((rule for rule in rules if 'height' in rule), rules[0])
+        self.assertIn('height: 4px', track_rule)
+        self.assertNotIn('height: 8px', track_rule)
+
+    def test_journal_is_a_collapsed_spoiler(self):
+        """The log must not push the modal around: it lives in a <details>."""
+        html = TEMPLATE.read_text(encoding='utf-8')
+        start = html.index('function renderAwgPluginProgress(component)')
+        end = html.index('function setAwgProgress', start)
+        body = html[start:end]
+
+        detail = "awgPluginElement('details', 'awg-plugin-details')"
+        self.assertIn(detail, body)
+        self.assertIn("logBox.id = 'awgPluginLogBox-' + component", body)
+        self.assertIn("logBox.appendChild(awgPluginElement('summary', '', labels.log))", body)
+        self.assertIn("log.id = 'awgPluginLog-' + component", body)
+        self.assertIn('logBox.appendChild(log)', body)
+
+        # The log div is created inside the spoiler and the spoiler is the
+        # element appended to the progress host.
+        detail_at = body.index(detail)
+        log_id_at = body.index("log.id = 'awgPluginLog-' + component")
+        attach_at = body.index('logBox.appendChild(log)')
+        host_at = body.index('host.appendChild(logBox)')
+        self.assertLess(detail_at, log_id_at)
+        self.assertLess(log_id_at, attach_at)
+        self.assertLess(attach_at, host_at)
+        self.assertLess(body.index("logBox.id = 'awgPluginLogBox-' + component"), attach_at)
+
+        # Collapsed by default: nothing opens it while the update renders.
+        self.assertNotIn('logBox.open = true', body)
+
+    def test_changelog_is_a_lazy_spoiler(self):
+        """The "What changed" block is a spoiler that fetches on first open."""
+        html = TEMPLATE.read_text(encoding='utf-8')
+        start = html.index('function renderAwgPluginModal()')
+        end = html.index('async function loadAwgPluginChangelog', start)
+        body = html[start:end]
+
+        self.assertIn("awgPluginElement('details', 'awg-plugin-details')", body)
+        self.assertIn("changelog.id = 'awgChangelogBox-' + component", body)
+        self.assertIn(
+            "changelog.appendChild(awgPluginElement('summary', '', labels.whats_new))",
+            body,
+        )
+        self.assertIn("changelog.addEventListener('toggle'", body)
+        self.assertIn('if (changelog.open && !changelog.dataset.loaded)', body)
+        self.assertIn("loadAwgPluginChangelog(component, info.available, changelogBody)", body)
+        self.assertIn("changelog.appendChild(changelogBody)", body)
+
+        # No leftover "What changed" button / eager loader.
+        self.assertNotIn('showAwgPluginChangelog', html)
+        for line in body.splitlines():
+            if 'labels.whats_new' in line:
+                self.assertNotIn('button', line.lower(), line)
+
+    def test_terminal_failure_opens_the_journal(self):
+        """A failed or cancelled update must show its reason without a click."""
+        html = TEMPLATE.read_text(encoding='utf-8')
+        start = html.index('async function pollAwgPluginUpdate(component)')
+        end = html.index("document.addEventListener('DOMContentLoaded'", start)
+        body = html[start:end]
+
+        branch_at = body.index("if (data.state === 'failed' || data.state === 'cancelled')")
+        branch = body[branch_at:]
+        self.assertIn(
+            "document.getElementById('awgPluginLogBox-' + component)",
+            branch,
+        )
+        self.assertIn('logBox.open = true', branch)
+        self.assertNotIn('logBox.open = false', body)
+        # Success keeps the spoiler closed; only terminal failures force it open.
+        self.assertNotIn('logBox.open = true', body[:branch_at])
+
     def test_translations_have_step_placeholders(self):
         files = sorted(TRANSLATIONS.glob('*.json'))
         self.assertEqual({path.stem for path in files}, {'en', 'fr', 'ru', 'zh', 'fa'})
@@ -251,6 +331,9 @@ class AwgPluginProgressTests(unittest.TestCase):
                 value = payload['awg_plugin_step']
                 self.assertIn('{step}', value)
                 self.assertIn('{total}', value)
+                # Spoiler summaries reuse the existing labels.
+                self.assertTrue(payload.get('awg_plugin_log'), path.name)
+                self.assertTrue(payload.get('awg_plugin_whats_new'), path.name)
 
     def test_ticker_creeps_and_respects_reduced_motion(self):
         html = TEMPLATE.read_text(encoding='utf-8')

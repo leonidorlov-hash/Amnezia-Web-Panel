@@ -997,7 +997,7 @@
   "awg_plugin_intro": "这些组件负责本服务器上的 AmneziaWG 隧道，可分别独立更新。",
   "awg_plugin_loading": "正在检查版本…",
   "awg_plugin_kernel_module": "内核模块",
-  "awg_plugin_kernel_module_desc": "Linux 内核模块：开销更低。需要当前内核的头文件和 DKMS 编译。更新可能短暂中断隧道。",
+  "awg_plugin_kernel_module_desc": "Linux 内核模块：高速吞吐时 CPU 负载比用户态实现低约 50–70%。",
   "awg_plugin_userspace": "用户态 · amneziawg-go",
   "awg_plugin_userspace_desc": "运行在容器中的用户态实现，不需要内核模块。更新会重建镜像并重建容器，同时恢复配置和对等端。",
   "awg_plugin_installed": "已安装",

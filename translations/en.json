@@ -997,7 +997,7 @@
   "awg_plugin_intro": "These components power AmneziaWG tunnels on this server. They are updated independently.",
   "awg_plugin_loading": "Checking versions…",
   "awg_plugin_kernel_module": "Kernel module",
-  "awg_plugin_kernel_module_desc": "Linux kernel module: lower overhead. Requires headers for the running kernel and a DKMS build. Updating may briefly interrupt tunnels.",
+  "awg_plugin_kernel_module_desc": "Linux kernel module: about 50–70% less CPU load than the userspace implementation at high throughput.",
   "awg_plugin_userspace": "Userspace · amneziawg-go",
   "awg_plugin_userspace_desc": "Userspace implementation running inside a container. Does not need the kernel module. Updating rebuilds the image and recreates the container, restoring its configuration and peers.",
   "awg_plugin_installed": "Installed",
