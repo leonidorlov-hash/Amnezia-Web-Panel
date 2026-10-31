@@ -1018,5 +1018,6 @@
   "awg_plugin_close": "Close",
   "awg_plugin_cancel": "Cancel",
   "awg_plugin_cancelling": "Cancelling…",
-  "awg_plugin_cancelled": "Update cancelled; the previous version is still running"
+  "awg_plugin_cancelled": "Update cancelled; the previous version is still running",
+  "awg_plugin_step": "Step {step} of {total}"
 }

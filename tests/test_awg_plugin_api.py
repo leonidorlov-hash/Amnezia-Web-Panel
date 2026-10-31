@@ -40,10 +40,14 @@ class FakeUpdater:
     def changelog(self, component, version):
         return [{'sha': 'abcdef12', 'subject': 'fix: something'}]
 
-    def update(self, component, target, allow_interrupt=False, log=None):
+    def update(self, component, target, allow_interrupt=False, log=None, should_cancel=None):
         self.calls.append((component, target, allow_interrupt))
         if log:
+            log('preflight', 'checking %s' % target)
             log('build', 'building %s' % target)
+            log('install', 'installing %s' % target)
+            log('activate', 'activating %s' % target)
+            log('done', 'finished')
         return {'component': component, 'previous': '3.1.20260812',
                 'installed': target, 'state': 'updated', 'rolled_back': False}
 

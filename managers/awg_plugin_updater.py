@@ -60,6 +60,30 @@ CONTAINER_CONFIG_SUBDIR = '/opt/amnezia/awg'
 KERNEL_BACKUP_DIR = '/var/lib/amnezia-plugin'
 DOCKER_NETWORK_SKIP = ('bridge', 'host', 'none')
 
+#: Ordered stages of each update, used by the UI to show "step N of 10" and a
+#: percentage that moves even when one stage (DKMS build) takes minutes.
+TOTAL_STEPS = 10
+STAGE_STEPS = {
+    KERNEL_MODULE: {
+        'start': 1, 'preflight': 2, 'backup': 3, 'download': 4,
+        'dkms-add': 5, 'build': 6, 'install': 7, 'verify': 8,
+        'activate': 9, 'done': 10, 'cleanup': 10,
+    },
+    USERSPACE: {
+        'start': 1, 'prepare': 2, 'backup': 3, 'build': 4,
+        'switch': 5, 'network': 6, 'restore': 7, 'verify': 8,
+        'finalize': 9, 'cleanup': 10, 'done': 10,
+    },
+}
+
+
+def stage_step(component, stage):
+    """``(step, total)`` for a log stage, or ``None`` for transient lines."""
+    step = (STAGE_STEPS.get(component) or {}).get(stage)
+    if not step:
+        return None
+    return step, TOTAL_STEPS
+
 
 class PluginUpdateError(Exception):
     """Operation failure with a stable machine-readable ``code``."""
@@ -189,10 +213,49 @@ class AwgPluginUpdater:
             "cat /sys/module/amneziawg/version 2>/dev/null || true"
         )
         kernel = _VERSION_RE.search((out or '').strip())
+        kernel_version = kernel.group(1) if kernel else None
+        recorded = self._recorded_version()
+        if recorded:
+            # A module built from a tag whose sources still carry the old
+            # WIREGUARD_VERSION would under-report itself; the record is
+            # trusted only while its code hash matches the loaded module.
+            kernel_version = recorded
         return {
-            KERNEL_MODULE: kernel.group(1) if kernel else None,
+            KERNEL_MODULE: kernel_version,
             USERSPACE: self._userspace_version(containers),
         }
+
+    def _recorded_version(self):
+        out, _, _ = self.ssh.run_command(
+            'cat %s/applied.json 2>/dev/null || true' % KERNEL_BACKUP_DIR
+        )
+        text = (out or '').strip()
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return None
+        version = payload.get('version')
+        srcversion = payload.get('srcversion')
+        if not version or not srcversion:
+            return None
+        sys_src, _, _ = self.ssh.run_command(
+            'cat /sys/module/amneziawg/srcversion 2>/dev/null || true'
+        )
+        if (sys_src or '').strip() != srcversion:
+            return None
+        return version
+
+    def _record_applied(self, version, srcversion, log):
+        if not srcversion:
+            return
+        payload = json.dumps({'version': version, 'srcversion': srcversion})
+        self._run(
+            "mkdir -p %s && printf '%%s' '%s' > %s/applied.json"
+            % (KERNEL_BACKUP_DIR, payload.replace("'", ''), KERNEL_BACKUP_DIR),
+            log, 'finalize',
+        )
 
     def _go_containers(self):
         out, _, _ = self.ssh.run_command(
@@ -412,6 +475,13 @@ class AwgPluginUpdater:
                 log(stage, line)
         return out or '', err or '', code
 
+    def _dkms_remove(self, version, log, stage='cleanup'):
+        # "not located in the DKMS tree" is a normal outcome on a fresh retry.
+        return self._run(
+            'dkms remove amneziawg/%s --all 2>/dev/null || true' % version,
+            log, stage, timeout=600,
+        )
+
     def _update_kernel(self, version, allow_interrupt, log, should_cancel=None):
         # The previously installed module is preserved twice before anything
         # is built: a byte copy of the loaded .ko (DKMS sources may have been
@@ -428,7 +498,7 @@ class AwgPluginUpdater:
             # A previous attempt may have left this exact version registered.
             # Never remove the version that is currently installed and loaded.
             if version != previous:
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'prepare', timeout=300)
+                self._dkms_remove(version, log, 'prepare')
             out, err, code = self._run(
                 'git clone --depth 1 --branch v%s %s /tmp/awg-plugin-update'
                 % (version, MODULE_REPO),
@@ -443,6 +513,20 @@ class AwgPluginUpdater:
                 % version,
                 log, 'prepare',
             )
+            # Upstream does not always bump the in-tree version string, so a
+            # module built from the new tag can still report the old version.
+            # Patch it, otherwise MODULE_VERSION() keeps advertising the old
+            # number and the panel would offer the same update forever.
+            self._run(
+                "cd /tmp/awg-plugin-update/src && "
+                "sed -i 's/#define WIREGUARD_VERSION .*/#define WIREGUARD_VERSION \"%s\"/' version.h"
+                % version,
+                log, 'prepare',
+            )
+            self._run(
+                'cd /tmp/awg-plugin-update/src && grep -m1 WIREGUARD_VERSION version.h || true',
+                log, 'prepare',
+            )
             out, err, code = self._run(
                 'cd /tmp/awg-plugin-update/src && dkms add .', log, 'dkms-add', timeout=300,
             )
@@ -453,20 +537,20 @@ class AwgPluginUpdater:
                 'dkms build amneziawg/%s' % version, log, 'build', timeout=1800,
             )
             if code != 0:
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                self._dkms_remove(version, log, 'cleanup')
                 raise PluginUpdateError(
                     'update_failed',
                     'dkms build failed; previously installed module kept',
                 )
             if cancelled():
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                self._dkms_remove(version, log, 'cleanup')
                 raise PluginUpdateError('cancelled', 'update cancelled; previously installed module kept')
 
             out, err, code = self._run(
                 'dkms install amneziawg/%s --force' % version, log, 'install', timeout=600,
             )
             if code != 0:
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                self._dkms_remove(version, log, 'cleanup')
                 raise PluginUpdateError(
                     'update_failed',
                     'dkms install failed; previously installed module kept',
@@ -482,23 +566,31 @@ class AwgPluginUpdater:
             )
             vermagic = (out or '').strip()
             if kver and vermagic and not vermagic.startswith(kver):
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                self._dkms_remove(version, log, 'cleanup')
                 raise PluginUpdateError(
                     'update_failed',
                     'the built module targets %s, not the running kernel %s; nothing was switched'
                     % (vermagic.split()[0], kver),
                 )
 
+            # srcversion is a hash of the built code and changes even when the
+            # version string does not, so it is the reliable identity check.
+            out, _, _ = self._run(
+                'modinfo -F srcversion $(modinfo -n amneziawg 2>/dev/null) 2>/dev/null || true',
+                log, 'verify',
+            )
+            new_srcversion = (out or '').strip().splitlines()[0] if (out or '').strip() else ''
+
             out, err, code = self._run('modprobe -n amneziawg', log, 'verify', timeout=120)
             if code != 0:
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                self._dkms_remove(version, log, 'cleanup')
                 raise PluginUpdateError(
                     'update_failed',
                     'the built module cannot be loaded; previously installed module kept',
                 )
 
             if cancelled():
-                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                self._dkms_remove(version, log, 'cleanup')
                 raise PluginUpdateError('cancelled', 'update cancelled before the module switch')
 
             log('activate', 'unloading the current module')
@@ -517,18 +609,32 @@ class AwgPluginUpdater:
                 self._rollback_kernel(version, previous, backup, log)
                 raise PluginUpdateError('update_failed', 'module built but could not be loaded; rolled back')
 
-            # /sys shows the version of the module that is actually loaded;
-            # modinfo reads the newest file on disk, which can differ.
+            # Identity check. Prefer srcversion (a hash of the built code) so a
+            # stale version string in upstream sources cannot cause a false
+            # mismatch; fall back to the version when srcversion is absent.
             out, _, _ = self._run(
-                'cat /sys/module/amneziawg/version 2>/dev/null || '
-                'modinfo -F version amneziawg 2>/dev/null || true',
+                'cat /sys/module/amneziawg/srcversion 2>/dev/null || true',
+                log, 'verify',
+            )
+            loaded_srcversion = (out or '').strip()
+            out, _, _ = self._run(
+                'cat /sys/module/amneziawg/version 2>/dev/null || true',
                 log, 'verify',
             )
             loaded = _VERSION_RE.search(out or '')
-            if not loaded or loaded.group(1) != version:
+            same_code = bool(new_srcversion) and loaded_srcversion == new_srcversion
+            same_version = bool(loaded) and loaded.group(1) == version
+            if not (same_code or same_version):
                 self._rollback_kernel(version, previous, backup, log)
-                raise PluginUpdateError('update_failed', 'loaded module version mismatch; rolled back')
+                raise PluginUpdateError(
+                    'update_failed',
+                    'the loaded module is still the previous build; rolled back',
+                )
+            if not same_version:
+                log('verify', 'note: the module reports %s but was built from %s'
+                    % (loaded.group(1) if loaded else 'unknown', version))
 
+            self._record_applied(version, new_srcversion or loaded_srcversion, log)
             self._start_awg_containers(stopped, log)
             self._cleanup_tmp(log)
             return {
@@ -581,7 +687,7 @@ class AwgPluginUpdater:
 
     def _restore_kernel_files(self, version, previous, backup, log):
         """Put the previous module back on disk after a failed switch."""
-        self._run('dkms remove amneziawg/%s --all' % version, log, 'rollback', timeout=600)
+        self._dkms_remove(version, log, 'rollback')
         if backup and backup.get('path') and backup.get('original'):
             out, err, code = self._run(
                 'mkdir -p "$(dirname %s)" && cp -a %s %s'
@@ -655,13 +761,19 @@ class AwgPluginUpdater:
         for name in names or ():
             log('start', 'starting %s' % name)
             self.ssh.run_command('docker start %s' % name, timeout=120)
-            # The tunnel comes back through start.sh; if it does not, the
-            # admin must see it instead of a silent "success".
-            out, _, _ = self.ssh.run_command(
-                'docker exec %s sh -c "awg show 2>/dev/null || wg show 2>/dev/null"' % name,
-                timeout=60,
-            )
-            if 'interface' not in (out or ''):
+            # The tunnel comes back through start.sh, which needs a few seconds;
+            # a single immediate check produces false warnings on slow hosts.
+            up = False
+            for _attempt in range(5):
+                out, _, _ = self.ssh.run_command(
+                    'docker exec %s sh -c "awg show 2>/dev/null || wg show 2>/dev/null"' % name,
+                    timeout=60,
+                )
+                if 'interface' in (out or ''):
+                    up = True
+                    break
+                time.sleep(2)
+            if not up:
                 log('start', 'WARNING: %s started but its tunnel is not up yet' % name)
 
     # -- userspace ------------------------------------------------------------

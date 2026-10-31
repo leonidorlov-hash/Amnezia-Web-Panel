@@ -123,6 +123,17 @@ class TestServerTemplateIntegrity(unittest.TestCase):
         self.assertIn('data.next_offset', body)
         self.assertIn('setTimeout', body)
 
+    def test_awg_plugin_progress_shows_stage_numbers(self):
+        """A slow DKMS build must show "step N of M" and a moving percentage."""
+        source = SERVER_TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('awg-progress-fill', source)
+        self.assertIn('awgProgressShimmer', source)
+        self.assertIn("labelsStep(op.step, op.total)", source)
+        self.assertIn("replace('{step}', step || 0)", source)
+        self.assertIn("replace('{total}', total || 10)", source)
+        self.assertIn('prefers-reduced-motion', source)
+        self.assertIn('setAwgProgress(component, data.step, data.total, data.percent', source)
+
     def test_awg_plugin_translations_exist_in_every_locale(self):
         import json as _json
         keys = [
@@ -137,6 +148,7 @@ class TestServerTemplateIntegrity(unittest.TestCase):
             'awg_plugin_no_update', 'awg_plugin_check_failed', 'awg_plugin_log',
             'awg_plugin_rollback_failed', 'awg_plugin_unknown_version', 'awg_plugin_close',
             'awg_plugin_cancel', 'awg_plugin_cancelling', 'awg_plugin_cancelled',
+            'awg_plugin_step',
         ]
         for lang in ('en', 'ru', 'fr', 'zh', 'fa'):
             data = _json.loads((ROOT / 'translations' / ('%s.json' % lang)).read_text(encoding='utf-8'))

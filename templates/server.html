@@ -172,6 +172,19 @@
     .awg-plugin-updated { color: var(--success); font-weight: 700; }
     .awg-plugin-log { font-family: 'SF Mono', 'Fira Code', monospace; font-size: .72rem; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: var(--space-sm); max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
     .awg-plugin-stage { color: var(--text-muted); }
+    /* Progress: the bar creeps inside the current stage so a multi-minute
+       DKMS build never looks frozen. */
+    .awg-progress { margin-top: var(--space-sm); }
+    .awg-progress-head { display: flex; justify-content: space-between; align-items: baseline; font-size: .8rem; color: var(--text-muted); margin-bottom: 6px; }
+    .awg-progress-percent { font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+    .awg-progress-track { height: 8px; border-radius: 999px; background: var(--bg-primary); border: 1px solid var(--border-color); overflow: hidden; }
+    .awg-progress-fill { height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--success)); transition: width .5s ease; position: relative; overflow: hidden; }
+    .awg-progress-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .35), transparent); transform: translateX(-100%); animation: awgProgressShimmer 1.6s infinite; }
+    @keyframes awgProgressShimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    @media (prefers-reduced-motion: reduce) {
+        .awg-progress-fill { transition: none; }
+        .awg-progress-fill::after { animation: none; }
+    }
 </style>
 {% endblock %}
 
@@ -310,6 +323,7 @@
             'cancel': _('awg_plugin_cancel'),
             'cancelling': _('awg_plugin_cancelling'),
             'cancelled': _('awg_plugin_cancelled'),
+            'step': _('awg_plugin_step'),
             'unknown': _('awg_plugin_unknown_version')
         } | tojson }};
     }
@@ -352,7 +366,10 @@
     }
 
     function closeAwgPluginModal() {
-        Object.values(awgPluginOps).forEach(op => { if (op.timer) clearTimeout(op.timer); });
+        Object.values(awgPluginOps).forEach(op => {
+            if (op.timer) clearTimeout(op.timer);
+            if (op.creep) clearInterval(op.creep);
+        });
         closeModal('awgPluginModal');
     }
 
@@ -474,6 +491,24 @@
         host.classList.remove('hidden');
         host.textContent = '';
         const labels = awgPluginLabel();
+        const progress = awgPluginElement('div', 'awg-progress');
+        const head = awgPluginElement('div', 'awg-progress-head');
+        head.appendChild(awgPluginElement('span', '', labels.step));
+        const percent = awgPluginElement('span', 'awg-progress-percent', '0%');
+        percent.id = 'awgProgressPercent-' + component;
+        head.appendChild(percent);
+        progress.appendChild(head);
+        const track = awgPluginElement('div', 'awg-progress-track');
+        track.setAttribute('role', 'progressbar');
+        track.setAttribute('aria-valuemin', '0');
+        track.setAttribute('aria-valuemax', '100');
+        track.setAttribute('aria-valuenow', '0');
+        track.id = 'awgProgressTrack-' + component;
+        const fill = awgPluginElement('div', 'awg-progress-fill');
+        fill.id = 'awgProgressFill-' + component;
+        track.appendChild(fill);
+        progress.appendChild(track);
+        host.appendChild(progress);
         host.appendChild(awgPluginElement('div', 'awg-plugin-stage', labels.running));
         const log = awgPluginElement('div', 'awg-plugin-log');
         log.id = 'awgPluginLog-' + component;
@@ -487,6 +522,52 @@
         cancel.onclick = () => cancelAwgPluginUpdate(component, cancel);
         actions.appendChild(cancel);
         host.appendChild(actions);
+        setAwgProgress(component, 0, 10, 0, true);
+    }
+
+    function setAwgProgress(component, step, total, percent, running) {
+        const op = awgPluginOps[component] || {};
+        awgPluginOps[component] = op;
+        const fill = document.getElementById('awgProgressFill-' + component);
+        const label = document.getElementById('awgProgressPercent-' + component);
+        const track = document.getElementById('awgProgressTrack-' + component);
+        if (!fill || !label || !track) return;
+        op.step = step || op.step || 0;
+        op.total = total || op.total || 10;
+        op.percent = Math.max(op.percent || 0, percent || 0);
+        if (running) {
+            // Do not creep into the next stage's slot: one step is 10%.
+            op.cap = Math.min(99, op.percent + 9);
+            if (!op.creep) {
+                op.creep = setInterval(() => {
+                    const current = awgPluginOps[component];
+                    if (!current || !current.creepRunning || current.display >= current.cap) return;
+                    current.display = Math.min(current.cap, (current.display || 0) + 1);
+                    const bar = document.getElementById('awgProgressFill-' + component);
+                    const text = document.getElementById('awgProgressPercent-' + component);
+                    const rail = document.getElementById('awgProgressTrack-' + component);
+                    if (bar) bar.style.width = current.display + '%';
+                    if (text) text.textContent = current.display + '%';
+                    if (rail) rail.setAttribute('aria-valuenow', String(current.display));
+                }, 900);
+            }
+            op.creepRunning = true;
+            op.display = Math.max(op.display || 0, op.percent);
+        } else {
+            op.creepRunning = false;
+            if (op.creep) { clearInterval(op.creep); op.creep = null; }
+            op.display = op.percent;
+        }
+        if (label) label.textContent = (op.display || 0) + '%';
+        fill.style.width = (op.display || 0) + '%';
+        track.setAttribute('aria-valuenow', String(op.display || 0));
+        const head = track.parentElement && track.parentElement.querySelector('.awg-progress-head span');
+        if (head) head.textContent = labelsStep(op.step, op.total);
+    }
+
+    function labelsStep(step, total) {
+        const template = awgPluginLabel().step;
+        return template.replace('{step}', step || 0).replace('{total}', total || 10);
     }
 
     async function cancelAwgPluginUpdate(component, button) {
@@ -512,6 +593,7 @@
             const data = await apiCall('/api/servers/{{ server_id }}/awg-plugin/update/' +
                 encodeURIComponent(op.opId) + '?offset=' + op.offset);
             op.offset = data.next_offset;
+            setAwgProgress(component, data.step, data.total, data.percent, data.state === 'running');
             (data.lines || []).forEach(line => {
                 if (log) log.textContent += '[' + line.ts + '] ' + line.stage + ': ' + line.text + '\n';
                 if (log) log.scrollTop = log.scrollHeight;
@@ -554,6 +636,9 @@
             if (updateButton) updateButton.disabled = false;
             const cancelButton = document.getElementById('awgPluginCancel-' + component);
             if (cancelButton) cancelButton.remove();
+            if (data.state === 'success') {
+                setAwgProgress(component, 10, 10, 100, false);
+            }
             if (data.state === 'success' || data.state === 'manual_step_required') {
                 await loadAwgPluginStatus();
             }

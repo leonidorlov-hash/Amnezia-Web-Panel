@@ -104,12 +104,12 @@ class KernelUpdateOrderingTests(unittest.TestCase):
         ssh = FakeSSH(kernel_handler())
         AwgPluginUpdater(ssh).update(KERNEL_MODULE, NEW)
 
-        backup_index = _index(ssh.commands, '/var/lib/amnezia-plugin')
+        backup_index = _index(ssh.commands, 'modinfo -n amneziawg')
         clone_index = _index(ssh.commands, 'git clone')
         self.assertLess(backup_index, clone_index)
 
         backup_command = ssh.commands[backup_index]
-        self.assertIn('modinfo -n amneziawg', backup_command)
+        self.assertIn('/var/lib/amnezia-plugin', backup_command)
         self.assertIn('amneziawg-%s.ko' % OLD, backup_command)
 
     def test_retry_removes_the_target_before_dkms_add(self):

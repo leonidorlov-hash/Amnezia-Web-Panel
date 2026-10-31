@@ -51,8 +51,10 @@ from managers.awg_plugin_updater import (
     COMPONENTS as AWG_PLUGIN_COMPONENTS,
     KERNEL_MODULE as AWG_PLUGIN_KERNEL,
     USERSPACE as AWG_PLUGIN_USERSPACE,
+    TOTAL_STEPS as AWG_PLUGIN_TOTAL_STEPS,
     AwgPluginUpdater,
     PluginUpdateError,
+    stage_step as awg_plugin_stage_step,
 )
 from managers.xray_manager import XrayManager
 from managers.wireguard_manager import WireGuardManager
@@ -5685,6 +5687,9 @@ async def api_awg_plugin_update(request: Request, server_id: int, req: AwgPlugin
         'result': None,
         'error': None,
         'cancel_requested': False,
+        'step': 0,
+        'total': AWG_PLUGIN_TOTAL_STEPS,
+        'percent': 0,
         'started_at': datetime.now().isoformat(timespec='seconds'),
     }
     _awg_plugin_ops[op_id] = op
@@ -5705,6 +5710,13 @@ async def _run_awg_plugin_update(op_id, server_id, component, target, allow_inte
             'stage': stage,
             'text': str(message)[-2000:],
         })
+        mapped = awg_plugin_stage_step(op['component'], stage)
+        if mapped:
+            step, total = mapped
+            if step > op.get('step', 0):
+                op['step'] = step
+                op['total'] = total
+                op['percent'] = int(round(step * 100.0 / total))
         _awg_plugin_save()
 
     try:
@@ -5784,6 +5796,9 @@ def api_awg_plugin_update_status(request: Request, server_id: int, op_id: str):
         'component': op['component'],
         'target': op['target'],
         'state': op['state'],
+        'step': op.get('step', 0),
+        'total': op.get('total', AWG_PLUGIN_TOTAL_STEPS),
+        'percent': op.get('percent', 0),
         'result': op['result'],
         'error': op['error'],
         'started_at': op['started_at'],
