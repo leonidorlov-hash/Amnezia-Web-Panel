@@ -78,6 +78,18 @@ def pick_latest(tags):
     return best
 
 
+def _repo_slug(repo):
+    """``https://github.com/owner/name.git`` -> ``owner/name``.
+
+    The GitHub API needs the owner: a bare repository name answers 404, which
+    is exactly the kind of failure that must not be mistaken for "up to date".
+    """
+    text = (repo or '').strip()
+    if 'github.com/' in text:
+        text = text.split('github.com/', 1)[1]
+    return text.replace('.git', '').strip('/')
+
+
 def _github_tags(repo):
     url = 'https://api.github.com/repos/%s/tags?per_page=100' % repo
     request = urllib.request.Request(
@@ -134,7 +146,7 @@ class AwgPluginUpdater:
             if cached and now - cached[0] < TAG_CACHE_TTL:
                 result[component] = cached[1]
                 continue
-            name = repo.rsplit('/', 1)[-1].replace('.git', '')
+            name = _repo_slug(repo)
             try:
                 tags = self._tag_source(name)
             except Exception as exc:  # network/API failure is not "up to date"
@@ -214,7 +226,7 @@ class AwgPluginUpdater:
 
     def changelog(self, component, version):
         repo = MODULE_REPO if component == KERNEL_MODULE else GO_REPO
-        name = repo.rsplit('/', 1)[-1].replace('.git', '')
+        name = _repo_slug(repo)
         installed = self.installed_versions().get(component)
         if not installed or not version:
             return []

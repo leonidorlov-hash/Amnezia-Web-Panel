@@ -278,5 +278,34 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual(AwgPluginUpdater(ssh).changelog(KERNEL_MODULE, NEW), [])
 
 
+class TagSourceTests(unittest.TestCase):
+    def test_repository_slug_keeps_the_owner(self):
+        """A bare repo name makes api.github.com answer 404."""
+        from managers.awg_plugin_updater import _repo_slug
+        self.assertEqual(
+            _repo_slug('https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git'),
+            'amnezia-vpn/amneziawg-linux-kernel-module',
+        )
+        self.assertEqual(
+            _repo_slug('https://github.com/amnezia-vpn/amneziawg-go'),
+            'amnezia-vpn/amneziawg-go',
+        )
+
+    def test_latest_versions_asks_for_owner_qualified_repos(self):
+        asked = []
+
+        def source(name):
+            asked.append(name)
+            return ['v3.1.20260906'] if 'kernel' in name else ['v3.1.20260828']
+
+        from managers.awg_plugin_updater import _tag_cache
+        _tag_cache.clear()
+        latest = AwgPluginUpdater(FakeSSH(), tag_source=source).latest_versions()
+        self.assertIn('amnezia-vpn/amneziawg-linux-kernel-module', asked)
+        self.assertIn('amnezia-vpn/amneziawg-go', asked)
+        self.assertEqual(latest[KERNEL_MODULE], '3.1.20260906')
+        self.assertEqual(latest[USERSPACE], '3.1.20260828')
+
+
 if __name__ == '__main__':
     unittest.main()
