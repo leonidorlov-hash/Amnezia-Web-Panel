@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from managers.awg_plugin_updater import (
     AwgPluginUpdater,
@@ -35,21 +36,26 @@ class FakeSSH:
         return [command for command in self.commands if needle in command]
 
 
-def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build=0,
-                   install=0, modprobe=0, unload=0, dry_run=0, verify=NEW):
+def kernel_handler(*, refs='0', headers='yes', tools='yes', git='yes', manager='apt-get',
+                   clone=(0, ''), build=0, install=0, modprobe=0, unload=0,
+                   dry_run=0, verify=NEW):
     state = {'modinfo_calls': 0, 'modprobe_calls': 0}
 
     def handler(command):
         if 'awk' in command and '/proc/modules' in command:
             return (refs, '', 0)
         if 'for m in apt-get' in command:
-            return ('apt-get', '', 0)
+            return (manager or '', '', 0)
+        if 'apt-get install' in command:
+            # One-click dependency installation always succeeds by default.
+            return ('', '', 0)
         if 'uname -r' in command and 'HEADERS=' in command:
             lines = ['KVER=6.12.113+deb13-amd64']
             lines.append('HEADERS=%s' % headers)
             lines.append('DKMS=%s' % tools)
             lines.append('GCC=%s' % tools)
             lines.append('MAKE=%s' % tools)
+            lines.append('GIT=%s' % git)
             return ('\n'.join(lines), '', 0)
         # /sys reflects the module that is actually loaded; only the post-load
         # verification command starts with it, installed_versions() starts
@@ -210,22 +216,36 @@ class StatusTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
-    def test_missing_headers_blocks(self):
+    def test_missing_headers_with_manager_is_installable(self):
+        """Headers are no longer fatal: one click installs them."""
         ssh = FakeSSH(kernel_handler(headers='no'))
         check = AwgPluginUpdater(ssh).preflight(KERNEL_MODULE)
-        self.assertFalse(check['ready'])
-        self.assertTrue(any('headers' in item for item in check['blockers']))
+        self.assertTrue(check['ready'])
+        self.assertEqual(check['blockers'], [])
+        self.assertIn('headers', check['installable'])
 
-    def test_missing_tools_blocks(self):
+    def test_missing_build_tools_are_installable(self):
+        """Missing dkms/gcc/make/git are installable, not blockers."""
         ssh = FakeSSH(kernel_handler(tools='no'))
         check = AwgPluginUpdater(ssh).preflight(KERNEL_MODULE)
+        self.assertTrue(check['ready'])
+        self.assertEqual(check['blockers'], [])
+        self.assertEqual(
+            set(check['installable']), {'dkms', 'gcc', 'make'},
+        )
+
+    def test_missing_tools_without_manager_blocks(self):
+        ssh = FakeSSH(kernel_handler(tools='no', manager=''))
+        check = AwgPluginUpdater(ssh).preflight(KERNEL_MODULE)
         self.assertFalse(check['ready'])
-        self.assertEqual(len(check['blockers']), 3)
+        self.assertTrue(check['blockers'])
 
     def test_ready_when_dependencies_present(self):
         ssh = FakeSSH(kernel_handler())
         check = AwgPluginUpdater(ssh).preflight(KERNEL_MODULE)
         self.assertTrue(check['ready'])
+        self.assertEqual(check['installable'], [])
+        self.assertEqual(check['blockers'], [])
         self.assertFalse(check['requires_interruption'])
 
 
@@ -451,8 +471,10 @@ class UserspaceUpdateTests(unittest.TestCase):
 
     def test_tunnel_not_coming_up_rolls_back(self):
         ssh = FakeSSH(self._handler(tunnel_ok=False))
-        with self.assertRaises(PluginUpdateError) as ctx:
-            AwgPluginUpdater(ssh).update(USERSPACE, GO_NEW, allow_interrupt=True)
+        # The retry loop sleeps two seconds between attempts; keep it instant.
+        with patch('managers.awg_plugin_updater.time.sleep'):
+            with self.assertRaises(PluginUpdateError) as ctx:
+                AwgPluginUpdater(ssh).update(USERSPACE, GO_NEW, allow_interrupt=True)
         self.assertEqual(ctx.exception.code, 'update_failed')
         self.assertIn('tunnel', ctx.exception.message)
         self.assertTrue(ssh.find('docker rm -f amnezia-awg3'))

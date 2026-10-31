@@ -60,19 +60,21 @@ CONTAINER_CONFIG_SUBDIR = '/opt/amnezia/awg'
 KERNEL_BACKUP_DIR = '/var/lib/amnezia-plugin'
 DOCKER_NETWORK_SKIP = ('bridge', 'host', 'none')
 
-#: Ordered stages of each update, used by the UI to show "step N of 10" and a
+#: Ordered stages of each update, used by the UI to show "step N of 12" and a
 #: percentage that moves even when one stage (DKMS build) takes minutes.
-TOTAL_STEPS = 10
+TOTAL_STEPS = 12
 STAGE_STEPS = {
     KERNEL_MODULE: {
-        'start': 1, 'preflight': 2, 'backup': 3, 'download': 4,
-        'dkms-add': 5, 'build': 6, 'install': 7, 'verify': 8,
-        'activate': 9, 'done': 10, 'cleanup': 10,
+        'start': 1, 'preflight': 2, 'dependencies': 3, 'backup': 4,
+        'download': 5, 'dkms-add': 6, 'build': 7, 'install': 8,
+        'verify': 9, 'activate': 10, 'tunnel': 11, 'done': 12,
+        'cleanup': 12,
     },
     USERSPACE: {
-        'start': 1, 'prepare': 2, 'backup': 3, 'build': 4,
-        'switch': 5, 'network': 6, 'restore': 7, 'verify': 8,
-        'finalize': 9, 'cleanup': 10, 'done': 10,
+        'start': 1, 'prepare': 2, 'dependencies': 3, 'backup': 4,
+        'build': 5, 'switch': 6, 'network': 7, 'restore': 8,
+        'verify': 9, 'finalize': 10, 'tunnel': 11, 'done': 12,
+        'cleanup': 12,
     },
 }
 
@@ -419,28 +421,39 @@ class AwgPluginUpdater:
                 "test -d /lib/modules/$(uname -r)/build && echo HEADERS=yes || echo HEADERS=no; "
                 "command -v dkms >/dev/null && echo DKMS=yes || echo DKMS=no; "
                 "command -v gcc >/dev/null && echo GCC=yes || echo GCC=no; "
-                "command -v make >/dev/null && echo MAKE=yes || echo MAKE=no"
+                "command -v make >/dev/null && echo MAKE=yes || echo MAKE=no; "
+                "command -v git >/dev/null && echo GIT=yes || echo GIT=no"
             )
             values = dict(
                 line.split('=', 1) for line in (out or '').splitlines() if '=' in line
             )
             manager = self._package_manager()
+            installable = []
             blockers = []
             if values.get('HEADERS') != 'yes':
-                # Only the missing headers matter here: build tools may already
-                # be present and a package manager may legitimately be absent
-                # on minimal images.
                 if manager:
-                    blockers.append(
-                        'no kernel headers for the running kernel (install them with %s first)' % manager
-                    )
+                    installable.append('headers')
                 else:
                     blockers.append(
                         'no kernel headers for the running kernel and no known package manager'
                     )
-            for tool in ('dkms', 'gcc', 'make'):
-                if values.get(tool.upper()) != 'yes':
-                    blockers.append('%s is not installed' % tool)
+            for tool, flag in (('dkms', 'DKMS'), ('gcc', 'GCC'), ('make', 'MAKE'), ('git', 'GIT')):
+                if values.get(flag) != 'yes':
+                    if manager:
+                        installable.append(tool)
+                    else:
+                        blockers.append('%s is not installed and there is no known package manager' % tool)
+            secure_boot = self._secure_boot_enabled()
+            if secure_boot:
+                # If the module is already loaded, Secure Boot must already
+                # accept it (enrolled MOK), so the new build will load too.
+                loaded, _, _ = self.ssh.run_command(
+                    'test -d /sys/module/amneziawg && echo yes || true'
+                )
+                if 'yes' not in (loaded or ''):
+                    blockers.append(
+                        'Secure Boot is enabled; an unsigned module cannot be loaded'
+                    )
             refs = self._module_ref_count()
             return {
                 'component': component,
@@ -448,6 +461,7 @@ class AwgPluginUpdater:
                 'package_manager': manager,
                 'requires_interruption': refs > 0,
                 'ready': not blockers,
+                'installable': installable,
                 'blockers': blockers,
             }
         containers = self._go_containers()
@@ -459,8 +473,112 @@ class AwgPluginUpdater:
             # Recreating a container restarts the tunnel for a moment.
             'requires_interruption': True,
             'ready': True,
+            'installable': [],
             'blockers': [],
         }
+
+    def _secure_boot_enabled(self):
+        out, _, _ = self.ssh.run_command(
+            'command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null || true'
+        )
+        return 'enabled' in (out or '').lower()
+
+    # ----------------------------------------------------------- dependencies
+
+    #: package name per manager for the base build tools
+    PACKAGE_NAMES = {
+        'apt-get': {'dkms': 'dkms', 'gcc': 'gcc', 'make': 'make', 'git': 'git'},
+        'dnf': {'dkms': 'dkms', 'gcc': 'gcc', 'make': 'make', 'git': 'git'},
+        'yum': {'dkms': 'dkms', 'gcc': 'gcc', 'make': 'make', 'git': 'git'},
+        'apk': {'dkms': 'dkms', 'gcc': 'gcc', 'make': 'make', 'git': 'git'},
+        'pacman': {'dkms': 'dkms', 'gcc': 'gcc', 'make': 'make', 'git': 'git'},
+    }
+
+    def _install(self, manager, packages, log):
+        joined = ' '.join(packages)
+        if manager == 'apt-get':
+            command = 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq %s' % joined
+        elif manager in ('dnf', 'yum'):
+            command = '%s install -y %s' % (manager, joined)
+        elif manager == 'apk':
+            command = 'apk add --no-cache %s' % joined
+        elif manager == 'pacman':
+            command = 'pacman -S --noconfirm --needed %s' % joined
+        else:
+            raise PluginUpdateError('preflight_failed', 'unsupported package manager')
+        out, err, code = self._run(command, log, 'dependencies', timeout=900, sudo=True)
+        if code == 0:
+            return True
+        text = ((out or '') + (err or '')).lower()
+        if manager == 'apt-get' and ('lock' in text or 'held by process' in text):
+            log('dependencies', 'package manager is busy, retrying once')
+            time.sleep(15)
+            out, err, code = self._run(command, log, 'dependencies', timeout=900, sudo=True)
+            if code == 0:
+                return True
+        return False
+
+    def _headers_candidates(self, manager, kernel):
+        """Possible header packages for a kernel, most specific first."""
+        candidates = []
+        if manager == 'apt-get':
+            candidates.append('linux-headers-%s' % kernel)
+            if 'cloud' in (kernel or ''):
+                candidates.append('linux-headers-cloud-amd64')
+            if 'generic' in (kernel or ''):
+                candidates.append('linux-headers-generic')
+            candidates.append('linux-headers-amd64')
+        elif manager in ('dnf', 'yum'):
+            candidates.append('kernel-devel-%s' % kernel)
+            candidates.append('kernel-devel')
+        elif manager == 'apk':
+            candidates.append('linux-headers')
+        elif manager == 'pacman':
+            candidates.append('linux-headers')
+        return candidates
+
+    def ensure_dependencies(self, component, log):
+        """Install whatever the build needs; only impossible cases block."""
+        check = self.preflight(component)
+        if check['blockers']:
+            raise PluginUpdateError('preflight_failed', '; '.join(check['blockers']))
+        installable = check.get('installable') or []
+        if not installable:
+            log('dependencies', 'all build dependencies are present')
+            return
+        manager = check['package_manager']
+        log('dependencies', 'missing: %s' % ', '.join(installable))
+        names = self.PACKAGE_NAMES.get(manager, {})
+        packages = [names[item] for item in installable if item != 'headers' and item in names]
+        if packages:
+            if not self._install(manager, packages, log):
+                raise PluginUpdateError(
+                    'preflight_failed',
+                    'cannot install %s with %s; see the journal' % (', '.join(packages), manager),
+                )
+        if 'headers' in installable:
+            kernel = check.get('kernel') or ''
+            installed = False
+            for candidate in self._headers_candidates(manager, kernel):
+                log('dependencies', 'trying %s' % candidate)
+                if self._install(manager, [candidate], log):
+                    installed = True
+                    break
+            if not installed:
+                raise PluginUpdateError(
+                    'preflight_failed',
+                    'no kernel headers for %s are available in the repositories' % kernel,
+                )
+        recheck = self.preflight(component)
+        if recheck['blockers']:
+            raise PluginUpdateError('preflight_failed', '; '.join(recheck['blockers']))
+        missing = recheck.get('installable') or []
+        if missing:
+            raise PluginUpdateError(
+                'preflight_failed',
+                'still missing after installation: %s' % ', '.join(missing),
+            )
+        log('dependencies', 'dependencies are ready')
 
     # ---------------------------------------------------------------- updates
 
@@ -481,6 +599,9 @@ class AwgPluginUpdater:
                 'requires_confirmation',
                 'updating this component temporarily interrupts active tunnels',
             )
+
+        # One click: install whatever is missing instead of failing the update.
+        self.ensure_dependencies(component, log)
 
         if component == KERNEL_MODULE:
             return self._update_kernel(version, allow_interrupt, log, should_cancel)
@@ -782,7 +903,7 @@ class AwgPluginUpdater:
 
     def _start_awg_containers(self, names, log):
         for name in names or ():
-            log('start', 'starting %s' % name)
+            log('tunnel', 'starting %s' % name)
             self.ssh.run_command('docker start %s' % name, timeout=120)
             # The tunnel comes back through start.sh, which needs a few seconds;
             # a single immediate check produces false warnings on slow hosts.
@@ -797,7 +918,7 @@ class AwgPluginUpdater:
                     break
                 time.sleep(2)
             if not up:
-                log('start', 'WARNING: %s started but its tunnel is not up yet' % name)
+                log('tunnel', 'WARNING: %s started but its tunnel is not up yet' % name)
 
     # -- userspace ------------------------------------------------------------
 

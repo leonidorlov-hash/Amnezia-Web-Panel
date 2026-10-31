@@ -31,7 +31,7 @@ def _index(commands, needle, start=0):
 
 def kernel_handler(*, backup=True, build=0, install=0, dry_run=0, unload=0,
                    modprobe=0, vermagic=None, sys_version=NEW,
-                   headers='yes', tools='yes', manager='apt-get',
+                   headers='yes', tools='yes', git='yes', manager='apt-get',
                    cp_fail=False):
     """Scripted answers for every command the kernel update issues.
 
@@ -49,10 +49,13 @@ def kernel_handler(*, backup=True, build=0, install=0, dry_run=0, unload=0,
             return ('0', '', 0)
         if 'for m in apt-get' in command:
             return (manager or '', '', 0)
+        if 'apt-get install' in command:
+            # One-click dependency installation succeeds by default.
+            return ('', '', 0)
         if 'HEADERS=' in command and 'uname -r' in command:
             return (
-                'KVER=%s\nHEADERS=%s\nDKMS=%s\nGCC=%s\nMAKE=%s'
-                % (KVER, headers, tools, tools, tools),
+                'KVER=%s\nHEADERS=%s\nDKMS=%s\nGCC=%s\nMAKE=%s\nGIT=%s'
+                % (KVER, headers, tools, tools, tools, git),
                 '', 0,
             )
         if command.strip() == 'uname -r':
@@ -138,16 +141,14 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(check['ready'])
         self.assertEqual(check['blockers'], [])
 
-    def test_headers_missing_with_package_manager_names_it(self):
+    def test_headers_missing_with_package_manager_is_installable(self):
+        """A known package manager turns missing headers into a one-click fix."""
         ssh = FakeSSH(kernel_handler(headers='no', manager='dnf'))
         check = AwgPluginUpdater(ssh).preflight(KERNEL_MODULE)
 
-        self.assertFalse(check['ready'])
-        self.assertTrue(check['blockers'])
-        self.assertTrue(
-            any('dnf' in blocker for blocker in check['blockers']),
-            'blocker does not name the package manager: %r' % (check['blockers'],),
-        )
+        self.assertTrue(check['ready'])
+        self.assertEqual(check['blockers'], [])
+        self.assertIn('headers', check['installable'])
 
     def test_headers_missing_and_no_package_manager_is_reported(self):
         ssh = FakeSSH(kernel_handler(headers='no', manager=''))

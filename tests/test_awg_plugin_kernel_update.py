@@ -44,9 +44,12 @@ def kernel_handler(*, backup=True, build=0, install=0, dry_run=0, unload=0,
             return ('0', '', 0)
         if 'for m in apt-get' in command:
             return ('apt-get', '', 0)
+        if 'apt-get install' in command:
+            # One-click dependency installation: success unless a test says no.
+            return ('', '', 0)
         if 'HEADERS=' in command and 'uname -r' in command:
             return (
-                'KVER=%s\nHEADERS=yes\nDKMS=yes\nGCC=yes\nMAKE=yes' % KVER,
+                'KVER=%s\nHEADERS=yes\nDKMS=yes\nGCC=yes\nMAKE=yes\nGIT=yes' % KVER,
                 '', 0,
             )
         if command.strip() == 'uname -r':

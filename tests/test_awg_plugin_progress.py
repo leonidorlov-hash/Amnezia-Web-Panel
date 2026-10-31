@@ -127,24 +127,53 @@ class AwgPluginProgressTests(unittest.TestCase):
     # --------------------------------------------------------------- stage map
 
     def test_stage_map_is_ordered_and_complete(self):
-        self.assertEqual(stage_step(KERNEL_MODULE, 'build'), (6, 10))
-        self.assertEqual(stage_step(KERNEL_MODULE, 'preflight'), (2, 10))
-        self.assertEqual(stage_step(USERSPACE, 'build'), (4, 10))
+        expected = {
+            KERNEL_MODULE: {
+                'start': 1, 'preflight': 2, 'dependencies': 3, 'backup': 4,
+                'download': 5, 'dkms-add': 6, 'build': 7, 'install': 8,
+                'verify': 9, 'activate': 10, 'tunnel': 11, 'done': 12,
+                'cleanup': 12,
+            },
+            USERSPACE: {
+                'start': 1, 'prepare': 2, 'dependencies': 3, 'backup': 4,
+                'build': 5, 'switch': 6, 'network': 7, 'restore': 8,
+                'verify': 9, 'finalize': 10, 'tunnel': 11, 'done': 12,
+                'cleanup': 12,
+            },
+        }
+        self.assertEqual(TOTAL_STEPS, 12)
+        for component, mapping in expected.items():
+            with self.subTest(component=component):
+                self.assertEqual(STAGE_STEPS[component], mapping)
+                for stage, step in mapping.items():
+                    self.assertEqual(stage_step(component, stage), (step, 12))
+
+        # Old step numbers moved: the new mapping is asserted explicitly.
+        self.assertEqual(stage_step(KERNEL_MODULE, 'preflight'), (2, 12))
+        self.assertEqual(stage_step(KERNEL_MODULE, 'build'), (7, 12))
+        self.assertEqual(stage_step(USERSPACE, 'build'), (5, 12))
+
+        # The journal emits `dependencies`; it must be a real stage that moves
+        # the bar forward, not a transient line the mapping ignores.
+        self.assertEqual(stage_step(KERNEL_MODULE, 'dependencies'), (3, 12))
+        self.assertIsNotNone(stage_step(KERNEL_MODULE, 'dependencies'))
+        self.assertEqual(stage_step(USERSPACE, 'dependencies'), (3, 12))
         self.assertIsNone(stage_step(KERNEL_MODULE, 'not-a-stage'))
         self.assertIsNone(stage_step('not-a-component', 'build'))
-        self.assertEqual(TOTAL_STEPS, 10)
 
         # The two terminal aliases (cleanup/done) both mean "finished" and
-        # intentionally share step 10, so strict increase is required for
+        # intentionally share step 12, so strict increase is required for
         # every other adjacent pair in the documented order.
         documented = {
             KERNEL_MODULE: [
-                'start', 'preflight', 'backup', 'download', 'dkms-add',
-                'build', 'install', 'verify', 'activate', 'done', 'cleanup',
+                'start', 'preflight', 'dependencies', 'backup', 'download',
+                'dkms-add', 'build', 'install', 'verify', 'activate', 'tunnel',
+                'done', 'cleanup',
             ],
             USERSPACE: [
-                'start', 'prepare', 'backup', 'build', 'switch', 'network',
-                'restore', 'verify', 'finalize', 'cleanup', 'done',
+                'start', 'prepare', 'dependencies', 'backup', 'build', 'switch',
+                'network', 'restore', 'verify', 'finalize', 'tunnel', 'done',
+                'cleanup',
             ],
         }
         terminal_aliases = {'done', 'cleanup'}
@@ -177,17 +206,19 @@ class AwgPluginProgressTests(unittest.TestCase):
         body = response.json()
         for key in ('step', 'total', 'percent'):
             self.assertIn(key, body)
+        self.assertEqual(body['total'], 12)
         self.assertEqual(body['total'], TOTAL_STEPS)
         self.assertEqual(body['percent'], int(round(body['step'] * 100.0 / body['total'])))
-        # The worker logged 'done', so the final operation is at 10/10.
+        # The worker logged 'done', so the final operation is at 12/12.
         self.assertEqual(body['step'], TOTAL_STEPS)
+        self.assertEqual(body['step'], 12)
         self.assertEqual(body['percent'], 100)
 
         # While the fake was still inside update(), the build stage had
-        # already moved the bar to 60% - the long-action case the UI cares
-        # about, not just the final value.
-        self.assertIn((6, 10, 60), self.updater.snapshots)
-        self.assertIn((2, 10, 20), self.updater.snapshots)
+        # already moved the bar to 58% (7/12) - the long-action case the UI
+        # cares about, not just the final value.
+        self.assertIn((7, 12, 58), self.updater.snapshots)
+        self.assertIn((2, 12, 17), self.updater.snapshots)
 
     def test_progress_never_goes_backwards(self):
         """Drive the real worker with log stages arriving out of order."""
@@ -201,7 +232,7 @@ class AwgPluginProgressTests(unittest.TestCase):
             'id': op_id, 'server_id': 0, 'component': KERNEL_MODULE,
             'target': '3.1.20260906', 'state': 'running', 'lines': [],
             'result': None, 'error': None, 'cancel_requested': False,
-            'step': 6, 'total': TOTAL_STEPS, 'percent': 60,
+            'step': 7, 'total': TOTAL_STEPS, 'percent': 58,
             'started_at': 't',
         }
         with patch.object(panel, '_awg_plugin_updater', lambda server_id: out_of_order):
@@ -211,8 +242,11 @@ class AwgPluginProgressTests(unittest.TestCase):
 
         op = panel._awg_plugin_ops[op_id]
         self.assertEqual(op['state'], 'success')
-        self.assertEqual(out_of_order.snapshots, [(6, 10, 60), (10, 10, 100), (10, 10, 100)])
-        self.assertEqual((op['step'], op['total'], op['percent']), (10, 10, 100))
+        self.assertEqual(
+            out_of_order.snapshots,
+            [(7, 12, 58), (12, 12, 100), (12, 12, 100)],
+        )
+        self.assertEqual((op['step'], op['total'], op['percent']), (12, 12, 100))
 
     # ------------------------------------------------------------ persistence
 
@@ -227,7 +261,8 @@ class AwgPluginProgressTests(unittest.TestCase):
         for key in ('step', 'total', 'percent'):
             self.assertIn(key, entry)
         self.assertEqual(entry['total'], TOTAL_STEPS)
-        self.assertEqual((entry['step'], entry['percent']), (10, 100))
+        self.assertEqual(entry['total'], 12)
+        self.assertEqual((entry['step'], entry['percent']), (12, 100))
 
     # --------------------------------------------------------------- template
 
