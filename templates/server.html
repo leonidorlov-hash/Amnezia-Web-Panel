@@ -548,6 +548,12 @@
                 const button = document.getElementById('awgPluginUpdate-' + component);
                 if (button) button.remove();
             }
+            // Any terminal state must leave the modal usable: a disabled
+            // "Update" button or a lingering "Cancel" looks like a hang.
+            const updateButton = document.getElementById('awgPluginUpdate-' + component);
+            if (updateButton) updateButton.disabled = false;
+            const cancelButton = document.getElementById('awgPluginCancel-' + component);
+            if (cancelButton) cancelButton.remove();
             if (data.state === 'success' || data.state === 'manual_step_required') {
                 await loadAwgPluginStatus();
             }

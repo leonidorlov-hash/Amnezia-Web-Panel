@@ -182,7 +182,7 @@ class AwgPluginUpdater:
             result[component] = latest
         return result
 
-    def installed_versions(self):
+    def installed_versions(self, containers=None):
         """Versions actually present on the managed server."""
         out, _, _ = self.ssh.run_command(
             "modinfo -F version amneziawg 2>/dev/null || "
@@ -191,7 +191,7 @@ class AwgPluginUpdater:
         kernel = _VERSION_RE.search((out or '').strip())
         return {
             KERNEL_MODULE: kernel.group(1) if kernel else None,
-            USERSPACE: self._userspace_version(),
+            USERSPACE: self._userspace_version(containers),
         }
 
     def _go_containers(self):
@@ -226,8 +226,8 @@ class AwgPluginUpdater:
         found = _VERSION_RE.search(out or '')
         return found.group(1) if found else None
 
-    def _userspace_version(self):
-        containers = self._go_containers()
+    def _userspace_version(self, containers=None):
+        containers = containers if containers is not None else self._go_containers()
         versions = set()
         for name, image in containers:
             out, _, _ = self.ssh.run_command(
@@ -255,12 +255,13 @@ class AwgPluginUpdater:
         return sorted(versions, key=version_tuple)[-1]
 
     def status(self, latest=None, installed=None):
-        installed = installed if installed is not None else self.installed_versions()
+        containers = self._go_containers()
+        installed = installed if installed is not None else self.installed_versions(containers)
         # A component that the server does not use at all is not offered as an
         # update: installing the userspace image without AWG containers (or
         # the kernel module without a module user) would be pointless.
         applicable = dict.fromkeys(COMPONENTS, True)
-        if not self._go_containers():
+        if not containers:
             applicable[USERSPACE] = False
         if latest is None:
             latest = {}
@@ -340,14 +341,17 @@ class AwgPluginUpdater:
             manager = self._package_manager()
             blockers = []
             if values.get('HEADERS') != 'yes':
+                # Only the missing headers matter here: build tools may already
+                # be present and a package manager may legitimately be absent
+                # on minimal images.
                 if manager:
                     blockers.append(
-                        'no kernel headers for the running kernel (can be installed with %s)' % manager
+                        'no kernel headers for the running kernel (install them with %s first)' % manager
                     )
                 else:
-                    blockers.append('no kernel headers and no known package manager')
-            if not manager:
-                blockers.append('no supported package manager (apt/dnf/yum/apk/pacman)')
+                    blockers.append(
+                        'no kernel headers for the running kernel and no known package manager'
+                    )
             for tool in ('dkms', 'gcc', 'make'):
                 if values.get(tool.upper()) != 'yes':
                     blockers.append('%s is not installed' % tool)
@@ -422,7 +426,9 @@ class AwgPluginUpdater:
         try:
             self._run('rm -rf /tmp/awg-plugin-update', log, 'prepare')
             # A previous attempt may have left this exact version registered.
-            self._run('dkms remove amneziawg/%s --all' % version, log, 'prepare', timeout=300)
+            # Never remove the version that is currently installed and loaded.
+            if version != previous:
+                self._run('dkms remove amneziawg/%s --all' % version, log, 'prepare', timeout=300)
             out, err, code = self._run(
                 'git clone --depth 1 --branch v%s %s /tmp/awg-plugin-update'
                 % (version, MODULE_REPO),
@@ -577,28 +583,53 @@ class AwgPluginUpdater:
         """Put the previous module back on disk after a failed switch."""
         self._run('dkms remove amneziawg/%s --all' % version, log, 'rollback', timeout=600)
         if backup and backup.get('path') and backup.get('original'):
-            self._run(
+            out, err, code = self._run(
                 'mkdir -p "$(dirname %s)" && cp -a %s %s'
                 % (backup['original'], backup['path'], backup['original']),
                 log, 'rollback',
             )
+            if code != 0:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    'cannot put the saved module back at %s; restore it by hand before rebooting'
+                    % backup['original'],
+                )
             self._run('depmod -a', log, 'rollback', timeout=120, sudo=True)
             return
         if previous:
             # No file copy (older deployments): rebuild from the DKMS source.
-            self._run('dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800)
-            self._run('dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600)
+            out, err, code = self._run(
+                'dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800,
+            )
+            if code != 0:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    'cannot rebuild module %s; reload the host before relying on AWG' % previous,
+                )
+            out, err, code = self._run(
+                'dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600,
+            )
+            if code != 0:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    'cannot reinstall module %s; reload the host before relying on AWG' % previous,
+                )
             self._run('depmod -a', log, 'rollback', timeout=120, sudo=True)
 
     def _rollback_kernel(self, version, previous, backup, log):
         """Restore the previously loaded module after a failed activation."""
         log('rollback', 'restoring previous module %s' % (previous or 'unknown'))
         self._restore_kernel_files(version, previous, backup, log)
-        self._run('modprobe amneziawg', log, 'rollback', timeout=120, sudo=True)
+        out, err, code = self._run('modprobe amneziawg', log, 'rollback', timeout=120, sudo=True)
+        if code != 0:
+            raise PluginUpdateError(
+                'rollback_failed',
+                'the previous module is on disk but could not be loaded; reload the host',
+            )
+        # Only /sys reflects the module that is actually loaded; modinfo reads
+        # the file on disk and can differ.
         out, _, _ = self._run(
-            'cat /sys/module/amneziawg/version 2>/dev/null || '
-            'modinfo -F version amneziawg 2>/dev/null || true',
-            log, 'rollback',
+            'cat /sys/module/amneziawg/version 2>/dev/null || true', log, 'rollback',
         )
         loaded = _VERSION_RE.search(out or '')
         if previous and (not loaded or loaded.group(1) != previous):
@@ -681,32 +712,75 @@ class AwgPluginUpdater:
 
         before = self._userspace_version()
         prepared = []
-        current = None
         try:
             for name, _image in containers:
-                current = name
                 prepared.append(self._prepare_container_update(name, log))
             for item in prepared:
                 if should_cancel and should_cancel():
-                    raise PluginUpdateError('cancelled', 'update cancelled before any container was replaced')
-                self._apply_container_update(item, version, log)
-            self._cleanup_tmp(log)
-            return {
-                'component': USERSPACE,
-                'previous': before,
-                'installed': self._userspace_version(),
-                'state': 'updated',
-                'rolled_back': False,
-            }
+                    raise PluginUpdateError(
+                        'cancelled',
+                        'update cancelled; containers already replaced are being restored',
+                    )
+                self._apply_container_update(item, version, log, should_cancel)
         except PluginUpdateError as exc:
-            self._rollback_containers(prepared, current, log)
-            if exc.code != 'rollback_failed':
-                self._cleanup_tmp(log)
+            failures = self._rollback_containers(prepared, log)
+            if failures:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    '%s; could not restore %s - check these containers manually'
+                    % (exc.message, ', '.join(failures)),
+                )
+            self._cleanup_tmp(log)
             raise
         except Exception as exc:
-            self._rollback_containers(prepared, current, log)
+            failures = self._rollback_containers(prepared, log)
+            if failures:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    '%s; could not restore %s - check these containers manually'
+                    % (exc, ', '.join(failures)),
+                )
             self._cleanup_tmp(log)
             raise PluginUpdateError('update_failed', str(exc))
+
+        # Everything is verified: only now are the predecessors removed, and
+        # outside the try above, so a cleanup hiccup can never trigger a
+        # rollback for which the old containers no longer exist.
+        try:
+            for item in prepared:
+                self._finalize_container_update(item, log)
+        except Exception:
+            log('cleanup', 'WARNING: could not remove every old container/image')
+        self._cleanup_tmp(log)
+        return {
+            'component': USERSPACE,
+            'previous': before,
+            'installed': self._userspace_version(),
+            'state': 'updated',
+            'rolled_back': False,
+        }
+
+    def _finalize_container_update(self, item, log):
+        old_name = item.get('old_name')
+        if not old_name:
+            return
+        self._run('docker rm -f %s' % old_name, log, 'cleanup')
+        self._remove_old_image(item.get('image_id'), log)
+
+    def _remove_old_image(self, image_id, log):
+        if not image_id:
+            return
+        # Several containers can share the same previous image, so the removal
+        # is attempted once per image and a failure is reported, not swallowed.
+        _removed = getattr(self, '_removed_images', None)
+        if _removed is None:
+            _removed = self._removed_images = set()
+        if image_id in _removed:
+            return
+        _removed.add(image_id)
+        out, err, code = self._run('docker rmi %s' % image_id, log, 'cleanup')
+        if code != 0:
+            log('cleanup', 'note: old image %s is still used elsewhere' % image_id)
 
     def _cleanup_tmp(self, log):
         """Remove build/backup artefacts; keep them only after a failed rollback."""
@@ -757,12 +831,12 @@ class AwgPluginUpdater:
             ],
         }
 
-    def _apply_container_update(self, item, version, log):
+    def _apply_container_update(self, item, version, log, should_cancel=None):
         name = item['name']
         stamp = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
         old_name = '%s.old-%s' % (name, stamp)
         item['old_name'] = old_name
-        item['stop_only'] = False
+        item['switched'] = False
 
         # Rebuild the panel image from its own Dockerfile, exactly like the
         # protocol installer does.  A failed build leaves the old tag intact
@@ -793,24 +867,43 @@ class AwgPluginUpdater:
                 % (version, built_version or 'unknown'),
             )
 
+        # The service is still untouched at this point: a late cancellation
+        # during a long image build must not restart anything.
+        if should_cancel and should_cancel():
+            raise PluginUpdateError('cancelled', 'update cancelled before %s was replaced' % name)
+
         host = item['host']
         run_cmd = self._docker_run_from_inspect(name, host)
-        self._run('docker stop %s' % name, log, 'switch')
-        self._run('docker rename %s %s' % (name, old_name), log, 'switch')
-        item['stop_only'] = True
+        out, err, code = self._run('docker stop %s' % name, log, 'switch')
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'cannot stop %s' % name)
+        out, err, code = self._run('docker rename %s %s' % (name, old_name), log, 'switch')
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'cannot move %s aside' % name)
+        # Set before `docker run`: if the replacement fails to start, the
+        # rollback must still be able to rename the old container back.
+        item['switched'] = True
         out, err, code = self._run(run_cmd, log, 'switch')
         if code != 0:
             raise PluginUpdateError('update_failed', 'cannot start the new container for %s' % name)
 
         for network in item.get('networks') or ():
             log('switch', 'attaching %s to %s' % (name, network))
-            self._run('docker network connect %s %s' % (network, name), log, 'switch', timeout=60)
+            out, err, code = self._run(
+                'docker network connect %s %s' % (network, name), log, 'switch', timeout=60,
+            )
+            if code != 0:
+                raise PluginUpdateError('update_failed', 'cannot attach %s to %s' % (name, network))
 
-        self._run(
+        out, err, code = self._run(
             'docker cp %s/. %s:%s/' % (item['backup'], name, CONTAINER_CONFIG_DIR),
             log, 'restore',
         )
-        self._run('docker restart %s' % name, log, 'restore')
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'cannot restore the configuration of %s' % name)
+        out, err, code = self._run('docker restart %s' % name, log, 'restore')
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'cannot restart %s' % name)
         out, err, code = self._run(
             'docker exec %s sh -c "test -f %s/*.conf"' % (name, CONTAINER_CONFIG_SUBDIR),
             log, 'verify',
@@ -847,9 +940,6 @@ class AwgPluginUpdater:
                 'update_failed',
                 'the tunnel did not come up after the update; rolling back',
             )
-        self._run('docker rm -f %s' % old_name, log, 'cleanup')
-        if item['image_id']:
-            self._run('docker rmi %s' % item['image_id'], log, 'cleanup')
         log('done', '%s is running %s with %s peers' % (name, version, peers))
 
     @staticmethod
@@ -895,17 +985,39 @@ class AwgPluginUpdater:
         parts.append(name)
         return ' \\\n'.join(parts)
 
-    def _rollback_containers(self, prepared, current, log):
-        for item in prepared:
+    def _rollback_containers(self, prepared, log):
+        """Restore every switched container; returns the ones that failed.
+
+        The predecessor is checked *before* the replacement is removed, so a
+        missing old container leaves the (working) new one in place instead of
+        destroying both. Runs in reverse order and only touches containers
+        that were actually replaced.
+        """
+        failures = []
+        for item in reversed(prepared):
             name = item['name']
             old_name = item.get('old_name')
-            if not old_name:
+            if not item.get('switched') or not old_name:
                 continue
             log('rollback', 'restoring %s' % name)
-            if item.get('stop_only'):
-                self.ssh.run_command('docker rm -f %s' % name, timeout=120)
-                self.ssh.run_command('docker rename %s %s' % (old_name, name), timeout=60)
-                self.ssh.run_command('docker start %s' % name, timeout=120)
-            else:
-                # The switch never started: the original container is intact.
-                self.ssh.run_command('docker start %s' % name, timeout=120)
+            out, _, _ = self.ssh.run_command(
+                'docker inspect %s >/dev/null 2>&1 && echo yes || true' % old_name,
+                timeout=60,
+            )
+            if 'yes' not in (out or ''):
+                log('rollback', 'ERROR: %s is gone; leaving %s running' % (old_name, name))
+                failures.append(name)
+                continue
+            self.ssh.run_command('docker rm -f %s' % name, timeout=120)
+            out, err, code = self.ssh.run_command(
+                'docker rename %s %s' % (old_name, name), timeout=60,
+            )
+            if code != 0:
+                log('rollback', 'ERROR: cannot rename %s back' % old_name)
+                failures.append(name)
+                continue
+            out, err, code = self.ssh.run_command('docker start %s' % name, timeout=120)
+            if code != 0:
+                log('rollback', 'ERROR: %s did not start' % name)
+                failures.append(name)
+        return failures

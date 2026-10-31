@@ -37,7 +37,7 @@ class FakeSSH:
 
 def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build=0,
                    install=0, modprobe=0, unload=0, dry_run=0, verify=NEW):
-    state = {'modinfo_calls': 0}
+    state = {'modinfo_calls': 0, 'modprobe_calls': 0}
 
     def handler(command):
         if 'awk' in command and '/proc/modules' in command:
@@ -72,7 +72,10 @@ def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build
         if 'modprobe -r amneziawg' in command:
             return ('', '', unload)
         if 'modprobe amneziawg' in command:
-            return ('', '', modprobe)
+            state['modprobe_calls'] += 1
+            # Only the activation may fail; the rollback retry succeeds so the
+            # rollback phase itself can be observed.
+            return ('', '', modprobe if state['modprobe_calls'] == 1 else 0)
         if 'depmod' in command:
             return ('', '', 0)
         if 'dkms remove' in command:
@@ -315,6 +318,8 @@ class UserspaceUpdateTests(unittest.TestCase):
                 return ('amnezia-awg3\tamneziavpn/amneziawg-go:latest', '', 0)
             if 'Config.Labels' in command:
                 return (version, '', 0)
+            if command.startswith('docker inspect amnezia-awg3.old-'):
+                return ('yes', '', 0)
             if command.startswith('docker inspect amnezia-awg3'):
                 payload = json.loads(self._inspect())
                 if shape == 'bad':

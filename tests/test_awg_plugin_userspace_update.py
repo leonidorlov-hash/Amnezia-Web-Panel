@@ -75,6 +75,8 @@ def userspace_handler(*, containers=None, inspect_options=None, peers_before='5'
                     return ((post_build_label if state['built'] else OLD), '', 0)
             return ('', '', 0)
 
+        if command.startswith('docker inspect ') and '.old-' in command:
+            return ('yes', '', 0)
         if command.startswith('docker inspect '):
             for name in containers:
                 if command.startswith('docker inspect %s' % name):
@@ -236,14 +238,18 @@ class CleanupTests(unittest.TestCase):
 class _RollbackFailedUpdater(AwgPluginUpdater):
     """Raises the code the cleanup guard keys on.
 
-    The userspace path has no natural producer of ``rollback_failed``:
-    ``_rollback_containers`` ignores command exit codes and never raises.
-    This subclass exercises the real ``except`` branch in
+    The userspace path only reports ``rollback_failed`` when a restore command
+    actually fails; this subclass exercises the real ``except`` branch in
     ``_update_userspace`` that decides whether artefacts are kept.
     """
 
-    def _apply_container_update(self, item, version, log):
-        raise PluginUpdateError('rollback_failed', 'simulated rollback failure')
+    def _apply_container_update(self, item, version, log, should_cancel=None):
+        item['switched'] = True
+        item['old_name'] = 'amnezia-awg3.old-test'
+        raise PluginUpdateError('update_failed', 'simulated switch failure')
+
+    def _rollback_containers(self, prepared, log):
+        return ['amnezia-awg3']
 
 
 class CleanupSkipTests(unittest.TestCase):
