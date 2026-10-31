@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -625,7 +626,10 @@ class AwgPluginUpdater:
         runner = getattr(self.ssh, 'run_sudo_command', None)
         if runner is None:
             return self.ssh.run_command(command, timeout=timeout)
-        return runner(command, timeout=timeout)
+        # sudo only understands `sudo <program> <args>`: loops, pipelines and
+        # `&&` chains must be handed to a shell, otherwise the probe silently
+        # returns nothing ("no known package manager").
+        return runner('bash -c ' + shlex.quote(command), timeout=timeout)
 
     def _run(self, command, log, stage, timeout=120, sudo=False):
         log(stage, command)
