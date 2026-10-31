@@ -999,7 +999,7 @@
   "awg_plugin_kernel_module": "Kernel module",
   "awg_plugin_kernel_module_desc": "Linux kernel module: lower overhead. Requires headers for the running kernel and a DKMS build. Updating may briefly interrupt tunnels.",
   "awg_plugin_userspace": "Userspace · amneziawg-go",
-  "awg_plugin_userspace_desc": "Userspace implementation running inside a container. Does not need the kernel module; applying it requires reinstalling the AmneziaWG 3.1 protocol.",
+  "awg_plugin_userspace_desc": "Userspace implementation running inside a container. Does not need the kernel module. Updating rebuilds the image and recreates the container, restoring its configuration and peers.",
   "awg_plugin_installed": "Installed",
   "awg_plugin_available": "Available",
   "awg_plugin_whats_new": "What changed",

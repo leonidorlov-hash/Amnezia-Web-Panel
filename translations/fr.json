@@ -999,7 +999,7 @@
   "awg_plugin_kernel_module": "Module noyau",
   "awg_plugin_kernel_module_desc": "Module du noyau Linux : moins de surcharge. Nécessite les en-têtes du noyau en cours et une compilation DKMS. La mise à jour peut interrompre brièvement les tunnels.",
   "awg_plugin_userspace": "Espace utilisateur · amneziawg-go",
-  "awg_plugin_userspace_desc": "Implémentation en espace utilisateur dans un conteneur. Ne nécessite pas le module noyau ; pour l'appliquer, réinstallez le protocole AmneziaWG 3.1.",
+  "awg_plugin_userspace_desc": "Implémentation en espace utilisateur dans un conteneur. Ne nécessite pas le module noyau. La mise à jour reconstruit l'image et recrée le conteneur en restaurant sa configuration et ses pairs.",
   "awg_plugin_installed": "Installé",
   "awg_plugin_available": "Disponible",
   "awg_plugin_whats_new": "Nouveautés",

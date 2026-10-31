@@ -999,7 +999,7 @@
   "awg_plugin_kernel_module": "Kernel module",
   "awg_plugin_kernel_module_desc": "Модуль ядра Linux: меньше накладных расходов. Нужны заголовки текущего ядра и сборка DKMS. Обновление может кратко прервать туннели.",
   "awg_plugin_userspace": "Userspace · amneziawg-go",
-  "awg_plugin_userspace_desc": "Реализация в userspace внутри контейнера. Не требует модуля ядра; для применения нужно переустановить протокол AmneziaWG 3.1.",
+  "awg_plugin_userspace_desc": "Реализация в userspace внутри контейнера. Не требует модуля ядра. При обновлении образ пересобирается, контейнер пересоздаётся, конфигурация и пиры восстанавливаются.",
   "awg_plugin_installed": "Установлено",
   "awg_plugin_available": "Доступно",
   "awg_plugin_whats_new": "Что изменилось",

@@ -122,6 +122,22 @@ class AwgPluginApiTests(unittest.TestCase):
             self.assertIn(key, body)
         self.assertEqual(body['component'], 'kernel_module')
 
+    def test_journal_survives_a_panel_restart(self):
+        """A killed update must never be resumed or shown as success."""
+        store = panel._awg_plugin_store_path()
+        Path(store).write_text(json.dumps([{
+            'id': 'op-restart', 'server_id': 0, 'component': 'kernel_module',
+            'target': '3.1.20260906', 'state': 'running', 'lines': [],
+            'result': None, 'error': None, 'started_at': 't',
+        }]), encoding='utf-8')
+        panel._awg_plugin_ops.clear()
+        panel._awg_plugin_loaded['done'] = False
+        panel._awg_plugin_load()
+        op = panel._awg_plugin_ops['op-restart']
+        self.assertEqual(op['state'], 'failed')
+        self.assertEqual(op['error']['code'], 'interrupted')
+        self.assertTrue(any('restarted' in line['text'] for line in op['lines']))
+
     def test_unknown_operation_is_404(self):
         response = self.client.get('/api/servers/0/awg-plugin/update/does-not-exist')
         self.assertEqual(response.status_code, 404)

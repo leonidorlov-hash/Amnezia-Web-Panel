@@ -5538,8 +5538,62 @@ async def api_smartroute_status(request: Request, server_id: int):
 # that does not own the SSH session.
 
 AWG_PLUGIN_OP_TTL = 60 * 60
+AWG_PLUGIN_OP_KEEP = 20
 _awg_plugin_ops = {}
 _awg_plugin_active = {}
+_awg_plugin_loaded = {'done': False}
+
+
+def _awg_plugin_store_path():
+    """Journal file next to data.json; an update outlives a panel restart."""
+    return os.path.join(os.path.dirname(DATA_FILE), 'awg_plugin_ops.json')
+
+
+def _awg_plugin_save():
+    path = _awg_plugin_store_path()
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as handle:
+            json.dump(list(_awg_plugin_ops.values()), handle, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        # Persistence is a convenience: never fail the update because the
+        # journal file cannot be written.
+        logger.warning("Cannot persist AWG plugin operations", exc_info=True)
+
+
+def _awg_plugin_load():
+    if _awg_plugin_loaded['done']:
+        return
+    _awg_plugin_loaded['done'] = True
+    path = _awg_plugin_store_path()
+    try:
+        with open(path, encoding='utf-8') as handle:
+            stored = json.load(handle)
+    except Exception:
+        return
+    if not isinstance(stored, list):
+        return
+    for op in stored:
+        if not isinstance(op, dict) or not op.get('id'):
+            continue
+        if op.get('state') == 'running':
+            # The process that owned the SSH session is gone. Never report a
+            # killed update as success; the admin must verify the version.
+            op['state'] = 'failed'
+            op['error'] = {
+                'code': 'interrupted',
+                'message': 'the panel restarted during the update; check the installed version',
+            }
+            op.setdefault('lines', []).append({
+                'ts': datetime.now().isoformat(timespec='seconds'),
+                'stage': 'error',
+                'text': 'panel restarted before the operation finished',
+            })
+            op['finished_at'] = datetime.now().isoformat(timespec='seconds')
+            op['finished_ts'] = datetime.now().timestamp()
+        _awg_plugin_ops[op['id']] = op
+    _awg_plugin_prune()
 
 
 class AwgPluginUpdateRequest(BaseModel):
@@ -5564,6 +5618,13 @@ def _awg_plugin_prune():
     for op_id, op in list(_awg_plugin_ops.items()):
         if op.get('finished_ts') and now - op['finished_ts'] > AWG_PLUGIN_OP_TTL:
             _awg_plugin_ops.pop(op_id, None)
+    if len(_awg_plugin_ops) > AWG_PLUGIN_OP_KEEP:
+        finished = sorted(
+            (op for op in _awg_plugin_ops.values() if op.get('finished_ts')),
+            key=lambda op: op['finished_ts'],
+        )
+        for op in finished[:len(_awg_plugin_ops) - AWG_PLUGIN_OP_KEEP]:
+            _awg_plugin_ops.pop(op['id'], None)
 
 
 @app.get('/api/servers/{server_id}/awg-plugin/status', tags=["Protocols"])
@@ -5571,6 +5632,7 @@ async def api_awg_plugin_status(request: Request, server_id: int):
     """Installed and published versions of the AWG components of this server."""
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    _awg_plugin_load()
     try:
         updater = await asyncio.to_thread(_awg_plugin_updater, server_id)
         result = await asyncio.to_thread(updater.status)
@@ -5602,6 +5664,7 @@ async def api_awg_plugin_update(request: Request, server_id: int, req: AwgPlugin
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     if req.component not in AWG_PLUGIN_COMPONENTS:
         return JSONResponse({'error': 'Unknown component', 'code': 'unsupported'}, status_code=400)
+    _awg_plugin_load()
     _awg_plugin_prune()
     key = (server_id, req.component)
     if key in _awg_plugin_active:
@@ -5624,6 +5687,7 @@ async def api_awg_plugin_update(request: Request, server_id: int, req: AwgPlugin
         'started_at': datetime.now().isoformat(timespec='seconds'),
     }
     _awg_plugin_ops[op_id] = op
+    _awg_plugin_save()
     _awg_plugin_active[key] = op_id
     asyncio.create_task(_run_awg_plugin_update(
         op_id, server_id, req.component, req.target, bool(req.allow_interrupt),
@@ -5640,6 +5704,7 @@ async def _run_awg_plugin_update(op_id, server_id, component, target, allow_inte
             'stage': stage,
             'text': str(message)[-2000:],
         })
+        _awg_plugin_save()
 
     try:
         updater = await asyncio.to_thread(_awg_plugin_updater, server_id)
@@ -5670,12 +5735,14 @@ async def _run_awg_plugin_update(op_id, server_id, component, target, allow_inte
         op['finished_at'] = datetime.now().isoformat(timespec='seconds')
         op['finished_ts'] = datetime.now().timestamp()
         _awg_plugin_active.pop((server_id, component), None)
+        _awg_plugin_save()
 
 
 @app.get('/api/servers/{server_id}/awg-plugin/update/{op_id}', tags=["Protocols"])
 def api_awg_plugin_update_status(request: Request, server_id: int, op_id: str):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    _awg_plugin_load()
     op = _awg_plugin_ops.get(op_id)
     if not op or op['server_id'] != server_id:
         return JSONResponse({'error': 'Operation not found', 'code': 'not_found'}, status_code=404)

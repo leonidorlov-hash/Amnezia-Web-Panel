@@ -3,7 +3,7 @@
 Two components are handled independently:
 
 * ``kernel_module`` – the DKMS-built ``amneziawg`` kernel module.
-* ``userspace``     – the ``amneziavpn/amneziawg-go`` container image.
+* ``userspace``     – the ``amneziavpn/amneziawg-go`` based container image.
 
 The single non-negotiable rule of this module is that a failed update must
 leave the server on the version it was running before the operation.  That is
@@ -11,11 +11,25 @@ why nothing here removes an installed/working version before the replacement
 has been built and verified, and why every failure path ends either with the
 previous state untouched or with an explicit rollback.
 
+Notes that shaped the implementation:
+
+* The panel's container keeps its configuration (server key, peers,
+  ``clientsTable``) *inside* the container under ``/opt/amnezia``.  A plain
+  ``docker run`` replacement would therefore lose every peer, so the userspace
+  path copies that directory out and restores it into the new container, and
+  the old container is kept (stopped) until the new one has been verified.
+* Kernel modules cannot be "swapped atomically": the old module is unloaded
+  immediately before the new one is loaded, and the old DKMS version is kept
+  registered so a failed activation can be rolled back.
+
 The module never touches ``data.json`` and never decides authorization: the
 caller (``app.py``) does that.
 """
 
+from __future__ import annotations
+
 import json
+import os
 import re
 import time
 import urllib.request
@@ -40,6 +54,9 @@ _VERSION_RE = re.compile(r'(\d+\.\d+\.\d{8})')
 #: plenty and keeps the status endpoint from being rate limited.
 TAG_CACHE_TTL = 6 * 60 * 60
 _tag_cache = {}
+
+CONTAINER_CONFIG_DIR = '/opt/amnezia'
+CONTAINER_CONFIG_SUBDIR = '/opt/amnezia/awg'
 
 
 class PluginUpdateError(Exception):
@@ -90,15 +107,22 @@ def _repo_slug(repo):
     return text.replace('.git', '').strip('/')
 
 
+def _headers():
+    headers = {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'amnezia-web-panel',
+    }
+    # Unauthenticated GitHub API is limited to 60 requests/hour; an operator
+    # that runs a large fleet can supply a token instead of hitting the limit.
+    token = (os.environ.get('GITHUB_TOKEN') or '').strip()
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    return headers
+
+
 def _github_tags(repo):
     url = 'https://api.github.com/repos/%s/tags?per_page=100' % repo
-    request = urllib.request.Request(
-        url,
-        headers={
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'amnezia-web-panel',
-        },
-    )
+    request = urllib.request.Request(url, headers=_headers())
     with urllib.request.urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode('utf-8'))
     return [entry.get('name', '') for entry in payload if isinstance(entry, dict)]
@@ -106,13 +130,7 @@ def _github_tags(repo):
 
 def _github_compare(repo, base, head):
     url = 'https://api.github.com/repos/%s/compare/%s...%s' % (repo, base, head)
-    request = urllib.request.Request(
-        url,
-        headers={
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'amnezia-web-panel',
-        },
-    )
+    request = urllib.request.Request(url, headers=_headers())
     with urllib.request.urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode('utf-8'))
     commits = []
@@ -146,9 +164,8 @@ class AwgPluginUpdater:
             if cached and now - cached[0] < TAG_CACHE_TTL:
                 result[component] = cached[1]
                 continue
-            name = _repo_slug(repo)
             try:
-                tags = self._tag_source(name)
+                tags = self._tag_source(_repo_slug(repo))
             except Exception as exc:  # network/API failure is not "up to date"
                 raise PluginUpdateError(
                     'version_check_failed',
@@ -226,13 +243,12 @@ class AwgPluginUpdater:
 
     def changelog(self, component, version):
         repo = MODULE_REPO if component == KERNEL_MODULE else GO_REPO
-        name = _repo_slug(repo)
         installed = self.installed_versions().get(component)
         if not installed or not version:
             return []
         try:
             return _github_compare(
-                name,
+                _repo_slug(repo),
                 'v%s' % installed if not installed.startswith('v') else installed,
                 'v%s' % version,
             )
@@ -248,6 +264,12 @@ class AwgPluginUpdater:
         text = (out or '').strip()
         return int(text) if text.isdigit() else 0
 
+    def _package_manager(self):
+        out, _, _ = self.ssh.run_command(
+            "for m in apt-get dnf yum apk pacman; do command -v $m >/dev/null && echo $m && break; done"
+        )
+        return (out or '').strip().splitlines()[0] if (out or '').strip() else None
+
     def preflight(self, component):
         if component not in COMPONENTS:
             raise PluginUpdateError('unsupported', 'unknown component')
@@ -262,16 +284,25 @@ class AwgPluginUpdater:
             values = dict(
                 line.split('=', 1) for line in (out or '').splitlines() if '=' in line
             )
-            refs = self._module_ref_count()
+            manager = self._package_manager()
             blockers = []
             if values.get('HEADERS') != 'yes':
-                blockers.append('no kernel headers for the running kernel')
+                if manager:
+                    blockers.append(
+                        'no kernel headers for the running kernel (can be installed with %s)' % manager
+                    )
+                else:
+                    blockers.append('no kernel headers and no known package manager')
+            if not manager:
+                blockers.append('no supported package manager (apt/dnf/yum/apk/pacman)')
             for tool in ('dkms', 'gcc', 'make'):
                 if values.get(tool.upper()) != 'yes':
                     blockers.append('%s is not installed' % tool)
+            refs = self._module_ref_count()
             return {
                 'component': component,
                 'kernel': values.get('KVER'),
+                'package_manager': manager,
                 'requires_interruption': refs > 0,
                 'ready': not blockers,
                 'blockers': blockers,
@@ -282,9 +313,8 @@ class AwgPluginUpdater:
         return {
             'component': component,
             'containers': [name for name, _ in containers],
-            # Pulling an image restarts nothing: the containers keep running
-            # the previous image until the protocol is reinstalled.
-            'requires_interruption': False,
+            # Recreating a container restarts the tunnel for a moment.
+            'requires_interruption': True,
             'ready': True,
             'blockers': [],
         }
@@ -326,12 +356,12 @@ class AwgPluginUpdater:
         return out or '', err or '', code
 
     def _update_kernel(self, version, allow_interrupt, log):
+        # The previously installed DKMS versions are never removed here: they
+        # are the rollback material if the new module cannot be activated.
         previous = self.installed_versions().get(KERNEL_MODULE)
         stopped = self._stop_awg_containers(log) if allow_interrupt else []
 
         try:
-            # 1) Build the new module next to the old one.  A failure here
-            #    leaves the installed module untouched.
             self._run('rm -rf /tmp/awg-plugin-update', log, 'prepare')
             out, err, code = self._run(
                 'git clone --depth 1 --branch v%s %s /tmp/awg-plugin-update'
@@ -358,17 +388,31 @@ class AwgPluginUpdater:
             )
             if code != 0:
                 self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
-                raise PluginUpdateError('update_failed', 'dkms build failed; previous module kept')
+                raise PluginUpdateError(
+                    'update_failed',
+                    'dkms build failed; previously installed module kept',
+                )
 
             out, err, code = self._run(
                 'dkms install amneziawg/%s --force' % version, log, 'install', timeout=600,
             )
             if code != 0:
                 self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
-                raise PluginUpdateError('update_failed', 'dkms install failed; previous module kept')
+                raise PluginUpdateError(
+                    'update_failed',
+                    'dkms install failed; previously installed module kept',
+                )
 
-            # 2) Swap the loaded module only now.  If this fails we remove the
-            #    new DKMS version and reload whatever was active before.
+            # Dry-run before touching the live module: catches missing
+            # dependencies/signature problems while the old module is still up.
+            out, err, code = self._run('modprobe -n amneziawg', log, 'verify', timeout=120)
+            if code != 0:
+                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                raise PluginUpdateError(
+                    'update_failed',
+                    'the built module cannot be loaded; previously installed module kept',
+                )
+
             log('activate', 'unloading the current module')
             self._run('modprobe -r amneziawg', log, 'activate', timeout=120, sudo=True)
             out, err, code = self._run('modprobe amneziawg', log, 'activate', timeout=120, sudo=True)
@@ -435,47 +479,226 @@ class AwgPluginUpdater:
 
     # -- userspace ------------------------------------------------------------
 
-    def _update_userspace(self, version, allow_interrupt, log):
-        """Pull the image and stop.
+    def _inspect_container(self, name):
+        out, err, code = self.ssh.run_command('docker inspect %s 2>/dev/null' % name)
+        if code != 0 or not (out or '').strip():
+            raise PluginUpdateError('unsupported', 'cannot inspect container %s' % name)
+        try:
+            payload = json.loads(out)
+        except ValueError:
+            raise PluginUpdateError('unsupported', 'unreadable container metadata for %s' % name)
+        if not isinstance(payload, list) or not payload:
+            raise PluginUpdateError('unsupported', 'unexpected container metadata for %s' % name)
+        return payload[0]
 
-        Recreating a user's AWG container from `docker inspect` cannot be done
-        safely: the panel builds the image from a generated Dockerfile and the
-        container carries bind mounts, capabilities and a start script that is
-        regenerated by ``install_protocol``.  A half-faithful ``docker run``
-        would silently drop parts of that configuration, so this version only
-        verifies that the registry has the requested image and tells the admin
-        to reinstall the protocol, which performs the recreate through the
-        panel's own, tested path.
-        """
+    @staticmethod
+    def _validate_container_shape(name, info):
+        """Only containers created by this panel are recreated automatically."""
+        host = info.get('HostConfig') or {}
+        unsupported = []
+        if not host.get('Privileged'):
+            unsupported.append('privileged')
+        caps = set(host.get('CapAdd') or [])
+        if not caps or not caps <= {'NET_ADMIN', 'SYS_MODULE'}:
+            unsupported.append('capabilities')
+        if not any(bind.startswith('/lib/modules:') for bind in (host.get('Binds') or [])):
+            unsupported.append('module mount')
+        for key in ('Devices', 'Tmpfs', 'ExtraHosts', 'PidMode', 'IpcMode'):
+            if host.get(key):
+                unsupported.append(key)
+        network = host.get('NetworkMode') or 'default'
+        if network not in ('default', 'bridge'):
+            unsupported.append('network mode %s' % network)
+        if (host.get('RestartPolicy') or {}).get('Name') != 'always':
+            unsupported.append('restart policy')
+        return unsupported
+
+    def _dockerfile_dir(self, name):
+        path = '/opt/amnezia/%s' % name
+        out, _, code = self.ssh.run_command('test -f %s/Dockerfile && echo yes || true' % path)
+        return path if 'yes' in (out or '') else None
+
+    def _update_userspace(self, version, allow_interrupt, log):
         containers = self._go_containers()
         if not containers:
             raise PluginUpdateError('not_installed', 'no userspace AWG containers found')
 
         before = self._userspace_version()
-        log('pull', 'pulling %s:latest' % GO_IMAGE)
-        out, err, code = self.ssh.run_command(
-            'docker pull %s:latest' % GO_IMAGE, timeout=1800,
-        )
-        text = ((out or '') + (err or '')).strip()
-        for line in text.splitlines()[-40:]:
-            log('pull', line)
-        if code != 0:
-            raise PluginUpdateError('update_failed', 'image pull failed; containers untouched')
+        prepared = []
+        current = None
+        try:
+            for name, _image in containers:
+                current = name
+                prepared.append(self._prepare_container_update(name, log))
+            for item in prepared:
+                self._apply_container_update(item, version, log)
+            return {
+                'component': USERSPACE,
+                'previous': before,
+                'installed': self._userspace_version(),
+                'state': 'updated',
+                'rolled_back': False,
+            }
+        except PluginUpdateError:
+            self._rollback_containers(prepared, current, log)
+            raise
+        except Exception as exc:
+            self._rollback_containers(prepared, current, log)
+            raise PluginUpdateError('update_failed', str(exc))
 
-        after = self._userspace_version()
-        if after is None or version_tuple(after) is None or version_tuple(after) < version_tuple(version):
-            log('verify', 'registry image is still %s, expected %s' % (after, version))
+    def _prepare_container_update(self, name, log):
+        """Validate and back up one container before touching anything."""
+        dockerfile_dir = self._dockerfile_dir(name)
+        if not dockerfile_dir:
+            raise PluginUpdateError(
+                'unsupported',
+                'container %s was not created by this panel; reinstall the protocol '
+                'to update userspace' % name,
+            )
+        info = self._inspect_container(name)
+        unsupported = self._validate_container_shape(name, info)
+        if unsupported:
+            raise PluginUpdateError(
+                'unsupported',
+                'container %s has an unsupported configuration (%s); reinstall the '
+                'protocol to update userspace' % (name, ', '.join(unsupported)),
+            )
+        backup = '/tmp/awg-plugin-backup-%s' % name
+        self._run('rm -rf %s' % backup, log, 'prepare')
+        out, err, code = self._run(
+            'docker cp %s:%s %s' % (name, CONTAINER_CONFIG_DIR, backup), log, 'backup',
+        )
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'cannot back up %s configuration' % name)
+        peers_out, _, _ = self._run(
+            "docker exec %s sh -c \"grep -c '^\\[Peer\\]' %s/*.conf 2>/dev/null\" "
+            % (name, CONTAINER_CONFIG_SUBDIR),
+            log, 'backup',
+        )
+        peers = sum(int(value) for value in re.findall(r'\d+', peers_out or '') if value.isdigit())
+        return {
+            'name': name,
+            'dockerfile_dir': dockerfile_dir,
+            'backup': backup,
+            'peers': peers,
+            'image_id': info.get('Image'),
+            'host': info.get('HostConfig') or {},
+        }
+
+    def _apply_container_update(self, item, version, log):
+        name = item['name']
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+        old_name = '%s.old-%s' % (name, stamp)
+        item['old_name'] = old_name
+        item['stop_only'] = False
+
+        # Rebuild the panel image from its own Dockerfile, exactly like the
+        # protocol installer does.  A failed build leaves the old tag intact
+        # and the running container untouched.
+        out, err, code = self._run(
+            'docker build --no-cache --pull -t %s %s' % (name, item['dockerfile_dir']),
+            log, 'build', timeout=1800,
+        )
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'image build failed for %s' % name)
+
+        out, _, _ = self._run(
+            "docker inspect --format '{{index .Config.Labels "
+            "\"org.opencontainers.image.version\"}}' %s" % name,
+            log, 'verify',
+        )
+        built = _VERSION_RE.search(out or '')
+        if not built or built.group(1) != version:
             raise PluginUpdateError(
                 'unsupported',
                 'the published image does not contain %s yet; nothing was restarted' % version,
             )
 
-        for name, _ in containers:
-            log('manual', '%s keeps running the previous image until the protocol is reinstalled' % name)
-        return {
-            'component': USERSPACE,
-            'previous': before,
-            'installed': after,
-            'state': 'manual_step_required',
-            'rolled_back': False,
-        }
+        host = item['host']
+        run_cmd = self._docker_run_from_inspect(name, host)
+        self._run('docker stop %s' % name, log, 'switch')
+        self._run('docker rename %s %s' % (name, old_name), log, 'switch')
+        item['stop_only'] = True
+        out, err, code = self._run(run_cmd, log, 'switch')
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'cannot start the new container for %s' % name)
+
+        self._run(
+            'docker cp %s/. %s:%s/' % (item['backup'], name, CONTAINER_CONFIG_DIR),
+            log, 'restore',
+        )
+        self._run('docker restart %s' % name, log, 'restore')
+        out, err, code = self._run(
+            'docker exec %s sh -c "test -f %s/*.conf"' % (name, CONTAINER_CONFIG_SUBDIR),
+            log, 'verify',
+        )
+        if code != 0:
+            raise PluginUpdateError('update_failed', 'new container has no configuration')
+
+        peers_out, _, _ = self._run(
+            "docker exec %s sh -c \"grep -c '^\\[Peer\\]' %s/*.conf 2>/dev/null\" "
+            % (name, CONTAINER_CONFIG_SUBDIR),
+            log, 'verify',
+        )
+        peers = sum(int(value) for value in re.findall(r'\d+', peers_out or '') if value.isdigit())
+        if peers < item['peers']:
+            raise PluginUpdateError(
+                'update_failed',
+                'peer count dropped from %s to %s; rolling back' % (item['peers'], peers),
+            )
+        self._run('docker rm -f %s' % old_name, log, 'cleanup')
+        if item['image_id']:
+            self._run('docker rmi %s' % item['image_id'], log, 'cleanup')
+        log('done', '%s is running %s with %s peers' % (name, version, peers))
+
+    @staticmethod
+    def _docker_run_from_inspect(name, host):
+        """Rebuild the panel's ``docker run`` command from container metadata."""
+        bindings = host.get('PortBindings') or {}
+        ports = []
+        for container_port, hosts in bindings.items():
+            for binding in hosts or []:
+                host_port = (binding or {}).get('HostPort')
+                if host_port:
+                    ports.append('-p %s:%s' % (host_port, container_port))
+        sysctls = [
+            '--sysctl="%s=%s"' % (key, value)
+            for key, value in sorted((host.get('Sysctls') or {}).items())
+        ]
+        binds = ['-v %s' % bind for bind in (host.get('Binds') or [])]
+        caps = ['--cap-add=%s' % cap for cap in (host.get('CapAdd') or [])]
+        parts = [
+            'docker run -d',
+            '--restart always',
+        ]
+        if host.get('Privileged'):
+            parts.append('--privileged')
+        parts.extend(caps)
+        parts.extend(ports)
+        parts.extend(binds)
+        parts.extend(sysctls)
+        parts.append('--name %s' % name)
+        ulimits = host.get('Ulimits') or []
+        for ulimit in ulimits:
+            name_ = (ulimit or {}).get('Name')
+            soft = (ulimit or {}).get('Soft')
+            hard = (ulimit or {}).get('Hard')
+            if name_ and soft and hard:
+                parts.append('--ulimit %s=%s:%s' % (name_, soft, hard))
+        parts.append(name)
+        return ' \\\n'.join(parts)
+
+    def _rollback_containers(self, prepared, current, log):
+        for item in prepared:
+            name = item['name']
+            old_name = item.get('old_name')
+            if not old_name:
+                continue
+            log('rollback', 'restoring %s' % name)
+            if item.get('stop_only'):
+                self.ssh.run_command('docker rm -f %s' % name, timeout=120)
+                self.ssh.run_command('docker rename %s %s' % (old_name, name), timeout=60)
+                self.ssh.run_command('docker start %s' % name, timeout=120)
+            else:
+                # The switch never started: the original container is intact.
+                self.ssh.run_command('docker start %s' % name, timeout=120)
