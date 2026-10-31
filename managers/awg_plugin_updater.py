@@ -181,6 +181,7 @@ class AwgPluginUpdater:
 
     def __init__(self, ssh, *, tag_source=None):
         self.ssh = ssh
+        self._root = getattr(ssh, '_is_root', True)
         self._tag_source = tag_source or _github_tags
 
     # ---------------------------------------------------------------- versions
@@ -210,7 +211,7 @@ class AwgPluginUpdater:
 
     def installed_versions(self, containers=None):
         """Versions actually present on the managed server."""
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             "modinfo -F version amneziawg 2>/dev/null || "
             "cat /sys/module/amneziawg/version 2>/dev/null || true"
         )
@@ -228,7 +229,7 @@ class AwgPluginUpdater:
         }
 
     def _recorded_version(self):
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             'cat %s/applied.json 2>/dev/null || true' % KERNEL_BACKUP_DIR
         )
         text = (out or '').strip()
@@ -242,7 +243,7 @@ class AwgPluginUpdater:
         srcversion = payload.get('srcversion')
         if not version or not srcversion:
             return None
-        sys_src, _, _ = self.ssh.run_command(
+        sys_src, _, _ = self._exec(
             'cat /sys/module/amneziawg/srcversion 2>/dev/null || true'
         )
         if (sys_src or '').strip() != srcversion:
@@ -267,7 +268,7 @@ class AwgPluginUpdater:
         The generated Dockerfile is the reliable marker, and it also excludes
         the legacy ``amnezia-wg`` containers.
         """
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             "docker ps -a --format '{{.Names}}\t{{.Image}}' 2>/dev/null || true"
         )
         containers = []
@@ -278,7 +279,7 @@ class AwgPluginUpdater:
             name = name.strip()
             if not name.startswith('amnezia-awg'):
                 continue
-            dockerfile, _, _ = self.ssh.run_command(
+            dockerfile, _, _ = self._exec(
                 'head -1 /opt/amnezia/%s/Dockerfile 2>/dev/null || true' % name
             )
             if 'amneziavpn/amneziawg-go' not in (dockerfile or ''):
@@ -288,14 +289,14 @@ class AwgPluginUpdater:
 
     def _image_version(self, tag):
         """Version of an image: label first, then the binary inside it."""
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             "docker inspect --format '{{index .Config.Labels "
             "\"org.opencontainers.image.version\"}}' %s 2>/dev/null || true" % tag
         )
         found = _VERSION_RE.search(out or '')
         if found:
             return found.group(1)
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             'docker run --rm --entrypoint sh %s -c '
             '"amneziawg-go --version 2>/dev/null || wg --version 2>/dev/null" 2>/dev/null || true'
             % tag,
@@ -311,7 +312,7 @@ class AwgPluginUpdater:
             # The userspace daemon has its own version line (0.0.YYYYMMDD),
             # unrelated to the git tags of the repository, so the binary is
             # the only honest source.
-            out, _, _ = self.ssh.run_command(
+            out, _, _ = self._exec(
                 'docker exec %s sh -c '
                 '"amneziawg-go --version 2>/dev/null || wg --version 2>/dev/null" 2>/dev/null || true'
                 % name,
@@ -320,7 +321,7 @@ class AwgPluginUpdater:
             for found in _iteration(out or ''):
                 versions.add(found)
             if not versions:
-                out, _, _ = self.ssh.run_command(
+                out, _, _ = self._exec(
                     "docker inspect --format "
                     "'{{index .Config.Labels \"org.opencontainers.image.version\"}}' "
                     "%s 2>/dev/null || true" % name
@@ -400,14 +401,14 @@ class AwgPluginUpdater:
     # -------------------------------------------------------------- preflight
 
     def _module_ref_count(self):
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             "awk '$1==\"amneziawg\"{print $3}' /proc/modules 2>/dev/null || true"
         )
         text = (out or '').strip()
         return int(text) if text.isdigit() else 0
 
     def _package_manager(self):
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             "for m in apt-get dnf yum apk pacman; do command -v $m >/dev/null && echo $m && break; done"
         )
         return (out or '').strip().splitlines()[0] if (out or '').strip() else None
@@ -416,7 +417,7 @@ class AwgPluginUpdater:
         if component not in COMPONENTS:
             raise PluginUpdateError('unsupported', 'unknown component')
         if component == KERNEL_MODULE:
-            out, _, _ = self.ssh.run_command(
+            out, _, _ = self._exec(
                 "echo KVER=$(uname -r); "
                 "test -d /lib/modules/$(uname -r)/build && echo HEADERS=yes || echo HEADERS=no; "
                 "command -v dkms >/dev/null && echo DKMS=yes || echo DKMS=no; "
@@ -447,7 +448,7 @@ class AwgPluginUpdater:
             if secure_boot:
                 # If the module is already loaded, Secure Boot must already
                 # accept it (enrolled MOK), so the new build will load too.
-                loaded, _, _ = self.ssh.run_command(
+                loaded, _, _ = self._exec(
                     'test -d /sys/module/amneziawg && echo yes || true'
                 )
                 if 'yes' not in (loaded or ''):
@@ -478,7 +479,7 @@ class AwgPluginUpdater:
         }
 
     def _secure_boot_enabled(self):
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             'command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null || true'
         )
         return 'enabled' in (out or '').lower()
@@ -609,9 +610,29 @@ class AwgPluginUpdater:
 
     # -- kernel ---------------------------------------------------------------
 
+    def _exec(self, command, timeout=60):
+        """Run a command with enough privileges for the build.
+
+        On cloud images the panel often connects as a normal user (debian,
+        ubuntu, …). ``dkms`` and ``modinfo`` live in /usr/sbin, which is not in
+        that user's PATH, and installing packages needs root anyway, so every
+        remote command is elevated when the session is not root.
+        """
+        if getattr(self, '_root', True):
+            return self.ssh.run_command(command, timeout=timeout)
+        if '\n' in command:
+            return self.ssh.run_sudo_script(command, timeout=timeout)
+        runner = getattr(self.ssh, 'run_sudo_command', None)
+        if runner is None:
+            return self.ssh.run_command(command, timeout=timeout)
+        return runner(command, timeout=timeout)
+
     def _run(self, command, log, stage, timeout=120, sudo=False):
         log(stage, command)
-        runner = self.ssh.run_sudo_script if sudo else self.ssh.run_command
+        if sudo or not getattr(self, '_root', True):
+            runner = self.ssh.run_sudo_script
+        else:
+            runner = self.ssh.run_command
         out, err, code = runner(command, timeout=timeout)
         text = ((out or '') + (err or '')).strip()
         if text:
@@ -889,7 +910,7 @@ class AwgPluginUpdater:
             )
 
     def _awg_container_names(self):
-        out, _, _ = self.ssh.run_command(
+        out, _, _ = self._exec(
             "docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^amnezia-awg' || true"
         )
         return [line.strip() for line in (out or '').splitlines() if line.strip()]
@@ -898,18 +919,18 @@ class AwgPluginUpdater:
         names = self._awg_container_names()
         for name in names:
             log('stop', 'stopping %s to release the kernel module' % name)
-            self.ssh.run_command('docker stop %s' % name, timeout=120)
+            self._exec('docker stop %s' % name, timeout=120)
         return names
 
     def _start_awg_containers(self, names, log):
         for name in names or ():
             log('tunnel', 'starting %s' % name)
-            self.ssh.run_command('docker start %s' % name, timeout=120)
+            self._exec('docker start %s' % name, timeout=120)
             # The tunnel comes back through start.sh, which needs a few seconds;
             # a single immediate check produces false warnings on slow hosts.
             up = False
             for _attempt in range(5):
-                out, _, _ = self.ssh.run_command(
+                out, _, _ = self._exec(
                     'docker exec %s sh -c "awg show 2>/dev/null || wg show 2>/dev/null"' % name,
                     timeout=60,
                 )
@@ -923,7 +944,7 @@ class AwgPluginUpdater:
     # -- userspace ------------------------------------------------------------
 
     def _inspect_container(self, name):
-        out, err, code = self.ssh.run_command('docker inspect %s 2>/dev/null' % name)
+        out, err, code = self._exec('docker inspect %s 2>/dev/null' % name)
         if code != 0 or not (out or '').strip():
             raise PluginUpdateError('unsupported', 'cannot inspect container %s' % name)
         try:
@@ -958,7 +979,7 @@ class AwgPluginUpdater:
 
     def _dockerfile_dir(self, name):
         path = '/opt/amnezia/%s' % name
-        out, _, code = self.ssh.run_command('test -f %s/Dockerfile && echo yes || true' % path)
+        out, _, code = self._exec('test -f %s/Dockerfile && echo yes || true' % path)
         return path if 'yes' in (out or '') else None
 
     def _update_userspace(self, version, allow_interrupt, log, should_cancel=None):
@@ -1256,7 +1277,7 @@ class AwgPluginUpdater:
             if not item.get('switched') or not old_name:
                 continue
             log('rollback', 'restoring %s' % name)
-            out, _, _ = self.ssh.run_command(
+            out, _, _ = self._exec(
                 'docker inspect %s >/dev/null 2>&1 && echo yes || true' % old_name,
                 timeout=60,
             )
@@ -1264,15 +1285,15 @@ class AwgPluginUpdater:
                 log('rollback', 'ERROR: %s is gone; leaving %s running' % (old_name, name))
                 failures.append(name)
                 continue
-            self.ssh.run_command('docker rm -f %s' % name, timeout=120)
-            out, err, code = self.ssh.run_command(
+            self._exec('docker rm -f %s' % name, timeout=120)
+            out, err, code = self._exec(
                 'docker rename %s %s' % (old_name, name), timeout=60,
             )
             if code != 0:
                 log('rollback', 'ERROR: cannot rename %s back' % old_name)
                 failures.append(name)
                 continue
-            out, err, code = self.ssh.run_command('docker start %s' % name, timeout=120)
+            out, err, code = self._exec('docker start %s' % name, timeout=120)
             if code != 0:
                 log('rollback', 'ERROR: %s did not start' % name)
                 failures.append(name)
