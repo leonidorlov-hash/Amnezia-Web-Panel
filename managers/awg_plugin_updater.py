@@ -57,6 +57,8 @@ _tag_cache = {}
 
 CONTAINER_CONFIG_DIR = '/opt/amnezia'
 CONTAINER_CONFIG_SUBDIR = '/opt/amnezia/awg'
+KERNEL_BACKUP_DIR = '/var/lib/amnezia-plugin'
+DOCKER_NETWORK_SKIP = ('bridge', 'host', 'none')
 
 
 class PluginUpdateError(Exception):
@@ -143,7 +145,9 @@ def _github_compare(repo, base, head):
 
 
 def _iteration(text):
-    return re.findall(r'^(\d+\.\d+\.\d{8})', text or '', re.MULTILINE)
+    # The binary prints "amneziawg-go v3.1.20260828" and `wg --version` prints
+    # a whole sentence, so the version must be found anywhere in the line.
+    return re.findall(r'(\d+\.\d+\.\d{8})', text or '')
 
 
 class AwgPluginUpdater:
@@ -204,6 +208,24 @@ class AwgPluginUpdater:
             containers.append((name.strip(), image.strip()))
         return containers
 
+    def _image_version(self, tag):
+        """Version of an image: label first, then the binary inside it."""
+        out, _, _ = self.ssh.run_command(
+            "docker inspect --format '{{index .Config.Labels "
+            "\"org.opencontainers.image.version\"}}' %s 2>/dev/null || true" % tag
+        )
+        found = _VERSION_RE.search(out or '')
+        if found:
+            return found.group(1)
+        out, _, _ = self.ssh.run_command(
+            'docker run --rm --entrypoint sh %s -c '
+            '"amneziawg-go --version 2>/dev/null || wg --version 2>/dev/null" 2>/dev/null || true'
+            % tag,
+            timeout=120,
+        )
+        found = _VERSION_RE.search(out or '')
+        return found.group(1) if found else None
+
     def _userspace_version(self):
         containers = self._go_containers()
         versions = set()
@@ -215,6 +237,15 @@ class AwgPluginUpdater:
             )
             for found in _iteration(out or ''):
                 versions.add(found)
+            if not versions:
+                out, _, _ = self.ssh.run_command(
+                    'docker exec %s sh -c '
+                    '"amneziawg-go --version 2>/dev/null || wg --version 2>/dev/null" 2>/dev/null || true'
+                    % name,
+                    timeout=120,
+                )
+                for found in _iteration(out or ''):
+                    versions.add(found)
             if not versions:
                 tag = image.split(':', 1)[-1]
                 for found in _iteration(tag):
@@ -343,7 +374,7 @@ class AwgPluginUpdater:
 
     # ---------------------------------------------------------------- updates
 
-    def update(self, component, target, *, allow_interrupt=False, log=None):
+    def update(self, component, target, *, allow_interrupt=False, log=None, should_cancel=None):
         log = log or (lambda stage, message: None)
         if component not in COMPONENTS:
             raise PluginUpdateError('unsupported', 'unknown component')
@@ -362,8 +393,8 @@ class AwgPluginUpdater:
             )
 
         if component == KERNEL_MODULE:
-            return self._update_kernel(version, allow_interrupt, log)
-        return self._update_userspace(version, allow_interrupt, log)
+            return self._update_kernel(version, allow_interrupt, log, should_cancel)
+        return self._update_userspace(version, allow_interrupt, log, should_cancel)
 
     # -- kernel ---------------------------------------------------------------
 
@@ -377,14 +408,21 @@ class AwgPluginUpdater:
                 log(stage, line)
         return out or '', err or '', code
 
-    def _update_kernel(self, version, allow_interrupt, log):
-        # The previously installed DKMS versions are never removed here: they
-        # are the rollback material if the new module cannot be activated.
+    def _update_kernel(self, version, allow_interrupt, log, should_cancel=None):
+        # The previously installed module is preserved twice before anything
+        # is built: a byte copy of the loaded .ko (DKMS sources may have been
+        # removed by an earlier install) and the DKMS version itself.
         previous = self.installed_versions().get(KERNEL_MODULE)
+        backup = self._backup_kernel_module(previous, log)
         stopped = self._stop_awg_containers(log) if allow_interrupt else []
+
+        def cancelled():
+            return bool(should_cancel and should_cancel())
 
         try:
             self._run('rm -rf /tmp/awg-plugin-update', log, 'prepare')
+            # A previous attempt may have left this exact version registered.
+            self._run('dkms remove amneziawg/%s --all' % version, log, 'prepare', timeout=300)
             out, err, code = self._run(
                 'git clone --depth 1 --branch v%s %s /tmp/awg-plugin-update'
                 % (version, MODULE_REPO),
@@ -414,6 +452,9 @@ class AwgPluginUpdater:
                     'update_failed',
                     'dkms build failed; previously installed module kept',
                 )
+            if cancelled():
+                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                raise PluginUpdateError('cancelled', 'update cancelled; previously installed module kept')
 
             out, err, code = self._run(
                 'dkms install amneziawg/%s --force' % version, log, 'install', timeout=600,
@@ -425,8 +466,23 @@ class AwgPluginUpdater:
                     'dkms install failed; previously installed module kept',
                 )
 
-            # Dry-run before touching the live module: catches missing
-            # dependencies/signature problems while the old module is still up.
+            # modprobe -n is a no-op while the old module is loaded, so check
+            # the real thing: the new .ko must have been built for this kernel.
+            kver_out, _, _ = self._run('uname -r', log, 'verify')
+            kver = (kver_out or '').strip()
+            out, err, code = self._run(
+                "modinfo -F vermagic $(modinfo -n amneziawg 2>/dev/null) 2>/dev/null || true",
+                log, 'verify',
+            )
+            vermagic = (out or '').strip()
+            if kver and vermagic and not vermagic.startswith(kver):
+                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                raise PluginUpdateError(
+                    'update_failed',
+                    'the built module targets %s, not the running kernel %s; nothing was switched'
+                    % (vermagic.split()[0], kver),
+                )
+
             out, err, code = self._run('modprobe -n amneziawg', log, 'verify', timeout=120)
             if code != 0:
                 self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
@@ -435,24 +491,24 @@ class AwgPluginUpdater:
                     'the built module cannot be loaded; previously installed module kept',
                 )
 
+            if cancelled():
+                self._run('dkms remove amneziawg/%s --all' % version, log, 'cleanup', timeout=300)
+                raise PluginUpdateError('cancelled', 'update cancelled before the module switch')
+
             log('activate', 'unloading the current module')
             out, err, code = self._run('modprobe -r amneziawg', log, 'activate', timeout=120, sudo=True)
             if code != 0:
                 # The module was grabbed by a new tunnel between the preflight
-                # and now. The loaded old module is intact, but dkms install of
-                # the new version already overwrote its .ko on disk - rebuild
-                # the old one so the next reboot cannot load a different
-                # version than the one that is running now.
-                if previous:
-                    self._run('dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800)
-                    self._run('dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600)
+                # and now. dkms install of the new version overwrote its .ko on
+                # disk, so put the saved copy of the old one back.
+                self._restore_kernel_files(version, previous, backup, log)
                 raise PluginUpdateError(
                     'update_failed',
                     'the module is in use by running tunnels; nothing was switched',
                 )
             out, err, code = self._run('modprobe amneziawg', log, 'activate', timeout=120, sudo=True)
             if code != 0:
-                self._rollback_kernel(version, previous, log)
+                self._rollback_kernel(version, previous, backup, log)
                 raise PluginUpdateError('update_failed', 'module built but could not be loaded; rolled back')
 
             # /sys shows the version of the module that is actually loaded;
@@ -464,10 +520,11 @@ class AwgPluginUpdater:
             )
             loaded = _VERSION_RE.search(out or '')
             if not loaded or loaded.group(1) != version:
-                self._rollback_kernel(version, previous, log)
+                self._rollback_kernel(version, previous, backup, log)
                 raise PluginUpdateError('update_failed', 'loaded module version mismatch; rolled back')
 
             self._start_awg_containers(stopped, log)
+            self._cleanup_tmp(log)
             return {
                 'component': KERNEL_MODULE,
                 'previous': previous,
@@ -475,40 +532,68 @@ class AwgPluginUpdater:
                 'state': 'updated',
                 'rolled_back': False,
             }
-        except PluginUpdateError:
+        except PluginUpdateError as exc:
             self._start_awg_containers(stopped, log)
+            if exc.code != 'rollback_failed':
+                self._cleanup_tmp(log)
             raise
         except Exception as exc:
             self._start_awg_containers(stopped, log)
+            self._cleanup_tmp(log)
             raise PluginUpdateError('update_failed', str(exc))
 
-    def _rollback_kernel(self, version, previous, log):
-        """Restore the previously loaded module after a failed activation.
+    def _backup_kernel_module(self, previous, log):
+        """Copy the loaded .ko before anything can overwrite it.
 
-        ``dkms install`` of the new version overwrote the old .ko on disk (both
-        versions install to the same path), so restoring the old module
-        requires rebuilding it from the kept DKMS source first.
+        ``dkms install`` puts the new module at the same path as the old one,
+        and an earlier install may have removed the old DKMS source, so a file
+        copy is the only rollback material that is always available.
         """
-        log('rollback', 'restoring previous module %s' % (previous or 'unknown'))
+        if not previous:
+            log('backup', 'no installed module to back up (first install)')
+            return None
+        out, _, _ = self._run(
+            'mkdir -p %s; MODPATH=$(modinfo -n amneziawg 2>/dev/null || true); '
+            'if [ -n "$MODPATH" ] && [ -f "$MODPATH" ]; then '
+            'cp -a "$MODPATH" %s/amneziawg-%s.ko; '
+            'echo "ORIG=$MODPATH"; echo "BACKUP=%s/amneziawg-%s.ko"; fi'
+            % (KERNEL_BACKUP_DIR, KERNEL_BACKUP_DIR, previous, KERNEL_BACKUP_DIR, previous),
+            log, 'backup',
+        )
+        backup = None
+        original = None
+        for line in (out or '').splitlines():
+            if line.startswith('ORIG='):
+                original = line.split('=', 1)[1].strip()
+            elif line.startswith('BACKUP='):
+                backup = line.split('=', 1)[1].strip()
+        if not backup:
+            log('backup', 'WARNING: could not copy the current module file')
+            return None
+        log('backup', 'saved %s -> %s' % (original, backup))
+        return {'path': backup, 'original': original, 'version': previous}
+
+    def _restore_kernel_files(self, version, previous, backup, log):
+        """Put the previous module back on disk after a failed switch."""
         self._run('dkms remove amneziawg/%s --all' % version, log, 'rollback', timeout=600)
+        if backup and backup.get('path') and backup.get('original'):
+            self._run(
+                'mkdir -p "$(dirname %s)" && cp -a %s %s'
+                % (backup['original'], backup['path'], backup['original']),
+                log, 'rollback',
+            )
+            self._run('depmod -a', log, 'rollback', timeout=120, sudo=True)
+            return
         if previous:
-            out, err, code = self._run(
-                'dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800,
-            )
-            if code != 0:
-                raise PluginUpdateError(
-                    'rollback_failed',
-                    'cannot rebuild module %s; reload the host before relying on AWG' % previous,
-                )
-            out, err, code = self._run(
-                'dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600,
-            )
-            if code != 0:
-                raise PluginUpdateError(
-                    'rollback_failed',
-                    'cannot reinstall module %s; reload the host before relying on AWG' % previous,
-                )
-        self._run('depmod -a', log, 'rollback', timeout=120, sudo=True)
+            # No file copy (older deployments): rebuild from the DKMS source.
+            self._run('dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800)
+            self._run('dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600)
+            self._run('depmod -a', log, 'rollback', timeout=120, sudo=True)
+
+    def _rollback_kernel(self, version, previous, backup, log):
+        """Restore the previously loaded module after a failed activation."""
+        log('rollback', 'restoring previous module %s' % (previous or 'unknown'))
+        self._restore_kernel_files(version, previous, backup, log)
         self._run('modprobe amneziawg', log, 'rollback', timeout=120, sudo=True)
         out, _, _ = self._run(
             'cat /sys/module/amneziawg/version 2>/dev/null || '
@@ -589,7 +674,7 @@ class AwgPluginUpdater:
         out, _, code = self.ssh.run_command('test -f %s/Dockerfile && echo yes || true' % path)
         return path if 'yes' in (out or '') else None
 
-    def _update_userspace(self, version, allow_interrupt, log):
+    def _update_userspace(self, version, allow_interrupt, log, should_cancel=None):
         containers = self._go_containers()
         if not containers:
             raise PluginUpdateError('not_installed', 'no userspace AWG containers found')
@@ -602,7 +687,10 @@ class AwgPluginUpdater:
                 current = name
                 prepared.append(self._prepare_container_update(name, log))
             for item in prepared:
+                if should_cancel and should_cancel():
+                    raise PluginUpdateError('cancelled', 'update cancelled before any container was replaced')
                 self._apply_container_update(item, version, log)
+            self._cleanup_tmp(log)
             return {
                 'component': USERSPACE,
                 'previous': before,
@@ -610,12 +698,19 @@ class AwgPluginUpdater:
                 'state': 'updated',
                 'rolled_back': False,
             }
-        except PluginUpdateError:
+        except PluginUpdateError as exc:
             self._rollback_containers(prepared, current, log)
+            if exc.code != 'rollback_failed':
+                self._cleanup_tmp(log)
             raise
         except Exception as exc:
             self._rollback_containers(prepared, current, log)
+            self._cleanup_tmp(log)
             raise PluginUpdateError('update_failed', str(exc))
+
+    def _cleanup_tmp(self, log):
+        """Remove build/backup artefacts; keep them only after a failed rollback."""
+        self._run('rm -rf /tmp/awg-plugin-update /tmp/awg-plugin-backup-*', log, 'cleanup')
 
     def _prepare_container_update(self, name, log):
         """Validate and back up one container before touching anything."""
@@ -654,6 +749,12 @@ class AwgPluginUpdater:
             'peers': peers,
             'image_id': info.get('Image'),
             'host': info.get('HostConfig') or {},
+            # The panel attaches the container to amnezia-dns-net after
+            # `docker run`; a recreate must not silently drop that.
+            'networks': [
+                net for net in ((info.get('NetworkSettings') or {}).get('Networks') or {})
+                if net not in DOCKER_NETWORK_SKIP
+            ],
         }
 
     def _apply_container_update(self, item, version, log):
@@ -678,11 +779,18 @@ class AwgPluginUpdater:
             "\"org.opencontainers.image.version\"}}' %s" % name,
             log, 'verify',
         )
-        built = _VERSION_RE.search(out or '')
-        if not built or built.group(1) != version:
+        found = _VERSION_RE.search(out or '')
+        built_version = found.group(1) if found else None
+        if not built_version:
+            # Some upstream images ship without the OCI version label; ask the
+            # binary itself instead of declaring the update impossible.
+            log('verify', 'image has no version label, asking the binary')
+            built_version = self._image_version(name)
+        if built_version != version:
             raise PluginUpdateError(
                 'unsupported',
-                'the published image does not contain %s yet; nothing was restarted' % version,
+                'the published image does not contain %s yet (found %s); nothing was restarted'
+                % (version, built_version or 'unknown'),
             )
 
         host = item['host']
@@ -693,6 +801,10 @@ class AwgPluginUpdater:
         out, err, code = self._run(run_cmd, log, 'switch')
         if code != 0:
             raise PluginUpdateError('update_failed', 'cannot start the new container for %s' % name)
+
+        for network in item.get('networks') or ():
+            log('switch', 'attaching %s to %s' % (name, network))
+            self._run('docker network connect %s %s' % (network, name), log, 'switch', timeout=60)
 
         self._run(
             'docker cp %s/. %s:%s/' % (item['backup'], name, CONTAINER_CONFIG_DIR),

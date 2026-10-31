@@ -1015,5 +1015,8 @@
   "awg_plugin_log": "日志",
   "awg_plugin_rollback_failed": "回滚失败——在依赖 AWG 前请重启主机",
   "awg_plugin_unknown_version": "未知",
-  "awg_plugin_close": "关闭"
+  "awg_plugin_close": "关闭",
+  "awg_plugin_cancel": "取消",
+  "awg_plugin_cancelling": "正在取消…",
+  "awg_plugin_cancelled": "更新已取消，仍在使用之前的版本"
 }

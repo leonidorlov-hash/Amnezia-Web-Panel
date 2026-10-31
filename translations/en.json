@@ -1015,5 +1015,8 @@
   "awg_plugin_log": "Log",
   "awg_plugin_rollback_failed": "Rollback failed — reload the host before relying on AWG",
   "awg_plugin_unknown_version": "unknown",
-  "awg_plugin_close": "Close"
+  "awg_plugin_close": "Close",
+  "awg_plugin_cancel": "Cancel",
+  "awg_plugin_cancelling": "Cancelling…",
+  "awg_plugin_cancelled": "Update cancelled; the previous version is still running"
 }

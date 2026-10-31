@@ -1015,5 +1015,8 @@
   "awg_plugin_log": "Журнал",
   "awg_plugin_rollback_failed": "Откат не удался — перезагрузите хост, прежде чем полагаться на AWG",
   "awg_plugin_unknown_version": "неизвестно",
-  "awg_plugin_close": "Закрыть"
+  "awg_plugin_close": "Закрыть",
+  "awg_plugin_cancel": "Отмена",
+  "awg_plugin_cancelling": "Отмена…",
+  "awg_plugin_cancelled": "Обновление отменено; продолжает работать прежняя версия"
 }

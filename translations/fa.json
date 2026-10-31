@@ -1015,5 +1015,8 @@
   "awg_plugin_log": "گزارش",
   "awg_plugin_rollback_failed": "بازگردانی ناموفق بود — پیش از اتکا به AWG میزبان را راه‌اندازی مجدد کنید",
   "awg_plugin_unknown_version": "نامشخص",
-  "awg_plugin_close": "بستن"
+  "awg_plugin_close": "بستن",
+  "awg_plugin_cancel": "لغو",
+  "awg_plugin_cancelling": "در حال لغو…",
+  "awg_plugin_cancelled": "به‌روزرسانی لغو شد؛ نسخه قبلی فعال است"
 }

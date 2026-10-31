@@ -136,6 +136,7 @@ class TestServerTemplateIntegrity(unittest.TestCase):
             'awg_plugin_requires_confirmation', 'awg_plugin_manual_step',
             'awg_plugin_no_update', 'awg_plugin_check_failed', 'awg_plugin_log',
             'awg_plugin_rollback_failed', 'awg_plugin_unknown_version', 'awg_plugin_close',
+            'awg_plugin_cancel', 'awg_plugin_cancelling', 'awg_plugin_cancelled',
         ]
         for lang in ('en', 'ru', 'fr', 'zh', 'fa'):
             data = _json.loads((ROOT / 'translations' / ('%s.json' % lang)).read_text(encoding='utf-8'))

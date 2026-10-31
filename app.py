@@ -5684,6 +5684,7 @@ async def api_awg_plugin_update(request: Request, server_id: int, req: AwgPlugin
         'lines': [],
         'result': None,
         'error': None,
+        'cancel_requested': False,
         'started_at': datetime.now().isoformat(timespec='seconds'),
     }
     _awg_plugin_ops[op_id] = op
@@ -5718,12 +5719,13 @@ async def _run_awg_plugin_update(op_id, server_id, component, target, allow_inte
         result = await asyncio.to_thread(
             updater.update, component, target,
             allow_interrupt=allow_interrupt, log=log,
+            should_cancel=lambda: bool(op.get('cancel_requested')),
         )
         op['result'] = result
         op['state'] = 'manual_step_required' if result.get('state') == 'manual_step_required' else 'success'
         log('done', 'state: %s' % op['state'])
     except PluginUpdateError as e:
-        op['state'] = 'failed'
+        op['state'] = 'cancelled' if e.code == 'cancelled' else 'failed'
         op['error'] = {'code': e.code, 'message': e.message}
         log('error', '%s: %s' % (e.code, e.message))
     except Exception as e:
@@ -5736,6 +5738,32 @@ async def _run_awg_plugin_update(op_id, server_id, component, target, allow_inte
         op['finished_ts'] = datetime.now().timestamp()
         _awg_plugin_active.pop((server_id, component), None)
         _awg_plugin_save()
+
+
+@app.post('/api/servers/{server_id}/awg-plugin/update/{op_id}/cancel', tags=["Protocols"])
+def api_awg_plugin_update_cancel(request: Request, server_id: int, op_id: str):
+    """Ask a running update to stop at the next safe boundary.
+
+    The DKMS build itself cannot be interrupted; the operation aborts before
+    the module switch or between containers, leaving the installed version in
+    place.
+    """
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    _awg_plugin_load()
+    op = _awg_plugin_ops.get(op_id)
+    if not op or op['server_id'] != server_id:
+        return JSONResponse({'error': 'Operation not found', 'code': 'not_found'}, status_code=404)
+    if op['state'] != 'running':
+        return JSONResponse({'error': 'Operation is not running', 'code': 'not_running'}, status_code=409)
+    op['cancel_requested'] = True
+    op['lines'].append({
+        'ts': datetime.now().isoformat(timespec='seconds'),
+        'stage': 'cancel',
+        'text': 'cancellation requested; stopping at the next safe boundary',
+    })
+    _awg_plugin_save()
+    return {'status': 'cancelling'}
 
 
 @app.get('/api/servers/{server_id}/awg-plugin/update/{op_id}', tags=["Protocols"])

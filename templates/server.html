@@ -307,6 +307,9 @@
             'error': _('awg_plugin_check_failed'),
             'log': _('awg_plugin_log'),
             'rollback': _('awg_plugin_rollback_failed'),
+            'cancel': _('awg_plugin_cancel'),
+            'cancelling': _('awg_plugin_cancelling'),
+            'cancelled': _('awg_plugin_cancelled'),
             'unknown': _('awg_plugin_unknown_version')
         } | tojson }};
     }
@@ -470,11 +473,35 @@
         if (!host) return;
         host.classList.remove('hidden');
         host.textContent = '';
-        host.appendChild(awgPluginElement('div', 'awg-plugin-stage', awgPluginLabel().running));
+        const labels = awgPluginLabel();
+        host.appendChild(awgPluginElement('div', 'awg-plugin-stage', labels.running));
         const log = awgPluginElement('div', 'awg-plugin-log');
         log.id = 'awgPluginLog-' + component;
         log.setAttribute('aria-live', 'polite');
         host.appendChild(log);
+        const actions = awgPluginElement('div', 'flex gap-sm');
+        actions.style.marginTop = 'var(--space-sm)';
+        const cancel = awgPluginElement('button', 'btn btn-secondary btn-sm', labels.cancel);
+        cancel.type = 'button';
+        cancel.id = 'awgPluginCancel-' + component;
+        cancel.onclick = () => cancelAwgPluginUpdate(component, cancel);
+        actions.appendChild(cancel);
+        host.appendChild(actions);
+    }
+
+    async function cancelAwgPluginUpdate(component, button) {
+        const op = awgPluginOps[component];
+        if (!op) return;
+        button.disabled = true;
+        const log = document.getElementById('awgPluginLog-' + component);
+        try {
+            await apiCall('/api/servers/{{ server_id }}/awg-plugin/update/' +
+                encodeURIComponent(op.opId) + '/cancel', 'POST', {});
+            if (log) log.textContent += awgPluginLabel().cancelling + '\n';
+        } catch (error) {
+            button.disabled = false;
+            if (log) log.textContent += error.message + '\n';
+        }
     }
 
     async function pollAwgPluginUpdate(component) {
@@ -501,6 +528,8 @@
                     stage.className = 'awg-plugin-stage awg-plugin-updated';
                 } else if (data.state === 'manual_step_required') {
                     stage.textContent = labels.manual;
+                } else if (data.state === 'cancelled') {
+                    stage.textContent = labels.cancelled;
                 } else {
                     const code = data.error && data.error.code;
                     stage.textContent = labels.failed + ': ' +
