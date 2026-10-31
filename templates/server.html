@@ -372,6 +372,9 @@
         const descriptions = {kernel_module: labels.kernel_desc, userspace: labels.userspace_desc};
         const titles = {kernel_module: labels.kernel, userspace: labels.userspace};
         Object.entries(awgPluginStatus.components || {}).forEach(([component, info]) => {
+            // A component the server does not use at all (e.g. no userspace
+            // containers) is not offered for install or update.
+            if (info.applicable === false) return;
             const block = awgPluginElement('div', 'awg-plugin-component');
             const head = awgPluginElement('div', 'awg-plugin-component-head');
             head.appendChild(awgPluginElement('strong', '', titles[component] || component));

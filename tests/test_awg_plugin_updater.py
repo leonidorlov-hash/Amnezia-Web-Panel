@@ -36,7 +36,7 @@ class FakeSSH:
 
 
 def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build=0,
-                   install=0, modprobe=0, dry_run=0, verify=NEW):
+                   install=0, modprobe=0, unload=0, dry_run=0, verify=NEW):
     state = {'modinfo_calls': 0}
 
     def handler(command):
@@ -51,9 +51,14 @@ def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build
             lines.append('GCC=%s' % tools)
             lines.append('MAKE=%s' % tools)
             return ('\n'.join(lines), '', 0)
+        # /sys reflects the module that is actually loaded; only the post-load
+        # verification command starts with it, installed_versions() starts
+        # with modinfo even though it falls back to /sys.
+        if command.startswith('cat /sys/module/amneziawg/version'):
+            return (verify, '', 0)
         if 'modinfo -F version amneziawg' in command:
             state['modinfo_calls'] += 1
-            return ((verify if state['modinfo_calls'] > 1 else OLD), '', 0)
+            return (OLD, '', 0)
         if 'git clone' in command:
             return ('', clone[1], clone[0])
         if 'dkms add' in command:
@@ -65,7 +70,7 @@ def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build
         if 'modprobe -n amneziawg' in command:
             return ('', '', dry_run)
         if 'modprobe -r amneziawg' in command:
-            return ('', '', 0)
+            return ('', '', unload)
         if 'modprobe amneziawg' in command:
             return ('', '', modprobe)
         if 'depmod' in command:
@@ -74,6 +79,8 @@ def kernel_handler(*, refs='0', headers='yes', tools='yes', clone=(0, ''), build
             return ('', '', 0)
         if command.startswith('docker ps'):
             return ('', '', 0)
+        if command.startswith('docker exec'):
+            return ('interface: awg0', '', 0)
         return ('', '', 0)
 
     return handler
@@ -139,9 +146,15 @@ class VersionDetectionTests(unittest.TestCase):
 
 
 class StatusTests(unittest.TestCase):
+    @staticmethod
+    def _ssh_with_userspace():
+        return FakeSSH(lambda command: (
+            ('amnezia-awg3\tamneziavpn/amneziawg-go:latest', '', 0)
+            if command.startswith('docker ps -a') else ('', '', 0)
+        ))
+
     def test_update_available(self):
-        updater = AwgPluginUpdater(FakeSSH())
-        status = updater.status(
+        status = AwgPluginUpdater(self._ssh_with_userspace()).status(
             latest={KERNEL_MODULE: NEW, USERSPACE: GO_NEW},
             installed={KERNEL_MODULE: OLD, USERSPACE: OLD},
         )
@@ -149,8 +162,7 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(status['components'][USERSPACE]['update_available'])
 
     def test_up_to_date(self):
-        updater = AwgPluginUpdater(FakeSSH())
-        status = updater.status(
+        status = AwgPluginUpdater(self._ssh_with_userspace()).status(
             latest={KERNEL_MODULE: NEW, USERSPACE: GO_NEW},
             installed={KERNEL_MODULE: NEW, USERSPACE: GO_NEW},
         )
@@ -158,8 +170,7 @@ class StatusTests(unittest.TestCase):
         self.assertFalse(status['components'][USERSPACE]['update_available'])
 
     def test_unknown_installed_is_update(self):
-        updater = AwgPluginUpdater(FakeSSH())
-        status = updater.status(
+        status = AwgPluginUpdater(self._ssh_with_userspace()).status(
             latest={KERNEL_MODULE: NEW, USERSPACE: None},
             installed={KERNEL_MODULE: None, USERSPACE: None},
         )
@@ -224,6 +235,34 @@ class KernelUpdateTests(unittest.TestCase):
         self.assertTrue(ssh.find('dkms remove amneziawg/%s --all' % NEW))
         self.assertFalse(ssh.find('modprobe -r amneziawg'))
 
+    def test_verification_reads_the_loaded_module(self):
+        ssh = FakeSSH(kernel_handler())
+        AwgPluginUpdater(ssh).update(KERNEL_MODULE, NEW)
+        self.assertTrue(ssh.find('cat /sys/module/amneziawg/version'))
+
+    def test_unload_busy_rebuilds_old_and_aborts(self):
+        """dkms install of the new version overwrites the old .ko on disk, so
+        an aborted switch must rebuild the old version before giving up."""
+        ssh = FakeSSH(kernel_handler(unload=1))
+        with self.assertRaises(PluginUpdateError) as ctx:
+            AwgPluginUpdater(ssh).update(KERNEL_MODULE, NEW, allow_interrupt=False)
+        self.assertEqual(ctx.exception.code, 'update_failed')
+        self.assertIn('in use', ctx.exception.message)
+        self.assertTrue(ssh.find('dkms build amneziawg/%s' % OLD))
+        self.assertTrue(ssh.find('dkms install amneziawg/%s --force' % OLD))
+        # The loaded old module was never touched.
+        self.assertTrue(ssh.find('modprobe -r amneziawg'))
+        self.assertFalse(ssh.find('dkms remove amneziawg/%s' % OLD))
+
+    def test_rollback_rebuilds_the_old_module(self):
+        ssh = FakeSSH(kernel_handler(modprobe=1, verify=OLD))
+        with self.assertRaises(PluginUpdateError) as ctx:
+            AwgPluginUpdater(ssh).update(KERNEL_MODULE, NEW)
+        self.assertEqual(ctx.exception.code, 'update_failed')
+        self.assertTrue(ssh.find('dkms build amneziawg/%s' % OLD))
+        self.assertTrue(ssh.find('dkms install amneziawg/%s --force' % OLD))
+        self.assertTrue(ssh.find('depmod'))
+
     def test_modprobe_failure_rolls_back(self):
         ssh = FakeSSH(kernel_handler(modprobe=1, verify=OLD))
         with self.assertRaises(PluginUpdateError) as ctx:
@@ -268,7 +307,7 @@ class UserspaceUpdateTests(unittest.TestCase):
         }])
 
     def _handler(self, *, build=0, version=GO_NEW, peers='3', peers_after='3',
-                 dockerfile='yes', shape='ok'):
+                 dockerfile='yes', shape='ok', tunnel_ok=True):
         state = {'peer_calls': 0, 'builds': 0}
 
         def handler(command):
@@ -288,6 +327,8 @@ class UserspaceUpdateTests(unittest.TestCase):
             if "grep -c" in command and 'docker exec' in command:
                 state['peer_calls'] += 1
                 return ((peers if state['peer_calls'] == 1 else peers_after), '', 0)
+            if 'docker exec' in command and ('awg show' in command or 'wg show' in command):
+                return ('interface: awg0', '', 0) if tunnel_ok else ('', '', 1)
             if command.startswith('docker build'):
                 state['builds'] += 1
                 return ('', 'build failed' if build else '', build)
@@ -365,6 +406,33 @@ class UserspaceUpdateTests(unittest.TestCase):
         ))
         self.assertTrue(ssh.find('docker start amnezia-awg3'))
 
+    def test_tunnel_not_coming_up_rolls_back(self):
+        ssh = FakeSSH(self._handler(tunnel_ok=False))
+        with self.assertRaises(PluginUpdateError) as ctx:
+            AwgPluginUpdater(ssh).update(USERSPACE, GO_NEW, allow_interrupt=True)
+        self.assertEqual(ctx.exception.code, 'update_failed')
+        self.assertIn('tunnel', ctx.exception.message)
+        self.assertTrue(ssh.find('docker rm -f amnezia-awg3'))
+        self.assertTrue(ssh.find('docker start amnezia-awg3'))
+
+    def test_status_marks_unused_userspace_not_applicable(self):
+        """No amneziawg-go containers: userspace is not offered at all."""
+        ssh = FakeSSH(lambda command: ('', '', 0))
+        asked = []
+
+        def source(name):
+            asked.append(name)
+            return ['v3.1.20260906'] if 'kernel' in name else ['v3.1.20260828']
+
+        from managers.awg_plugin_updater import _tag_cache
+        _tag_cache.clear()
+        status = AwgPluginUpdater(ssh, tag_source=source).status()
+        userspace = status['components'][USERSPACE]
+        self.assertFalse(userspace['applicable'])
+        self.assertFalse(userspace['update_available'])
+        self.assertNotIn('amnezia-vpn/amneziawg-go', asked)
+        self.assertTrue(status['components'][KERNEL_MODULE]['applicable'])
+
     def test_run_command_is_rebuilt_from_inspect(self):
         command = AwgPluginUpdater._docker_run_from_inspect(
             'amnezia-awg3', json.loads(self._inspect())[0]['HostConfig'])
@@ -376,7 +444,6 @@ class UserspaceUpdateTests(unittest.TestCase):
         self.assertIn('--sysctl="net.ipv4.conf.all.src_valid_mark=1"', command)
         self.assertIn('--ulimit nofile=51200:51200', command)
         self.assertTrue(command.rstrip().endswith('amnezia-awg3'))
-
 
 
 class ChangelogTests(unittest.TestCase):

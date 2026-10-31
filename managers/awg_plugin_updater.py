@@ -155,11 +155,13 @@ class AwgPluginUpdater:
 
     # ---------------------------------------------------------------- versions
 
-    def latest_versions(self):
-        """Newest published version of each component."""
+    def latest_versions(self, component=None):
+        """Newest published version of one or all components."""
+        wanted = [component] if component else list(COMPONENTS)
         now = time.time()
         result = {}
-        for component, repo in ((KERNEL_MODULE, MODULE_REPO), (USERSPACE, GO_REPO)):
+        for component in wanted:
+            repo = MODULE_REPO if component == KERNEL_MODULE else GO_REPO
             cached = _tag_cache.get(component)
             if cached and now - cached[0] < TAG_CACHE_TTL:
                 result[component] = cached[1]
@@ -222,13 +224,33 @@ class AwgPluginUpdater:
         return sorted(versions, key=version_tuple)[-1]
 
     def status(self, latest=None, installed=None):
-        latest = latest if latest is not None else self.latest_versions()
         installed = installed if installed is not None else self.installed_versions()
+        # A component that the server does not use at all is not offered as an
+        # update: installing the userspace image without AWG containers (or
+        # the kernel module without a module user) would be pointless.
+        applicable = dict.fromkeys(COMPONENTS, True)
+        if not self._go_containers():
+            applicable[USERSPACE] = False
+        if latest is None:
+            latest = {}
+            for component in COMPONENTS:
+                if applicable[component]:
+                    latest.update(self.latest_versions(component))
         components = {}
         for component in COMPONENTS:
+            if not applicable[component]:
+                components[component] = {
+                    'applicable': False,
+                    'installed': None,
+                    'available': None,
+                    'update_available': False,
+                    'installed_detected': False,
+                }
+                continue
             current = installed.get(component)
             available = latest.get(component)
             components[component] = {
+                'applicable': True,
                 'installed': current,
                 'available': available,
                 'update_available': bool(
@@ -414,14 +436,31 @@ class AwgPluginUpdater:
                 )
 
             log('activate', 'unloading the current module')
-            self._run('modprobe -r amneziawg', log, 'activate', timeout=120, sudo=True)
+            out, err, code = self._run('modprobe -r amneziawg', log, 'activate', timeout=120, sudo=True)
+            if code != 0:
+                # The module was grabbed by a new tunnel between the preflight
+                # and now. The loaded old module is intact, but dkms install of
+                # the new version already overwrote its .ko on disk - rebuild
+                # the old one so the next reboot cannot load a different
+                # version than the one that is running now.
+                if previous:
+                    self._run('dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800)
+                    self._run('dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600)
+                raise PluginUpdateError(
+                    'update_failed',
+                    'the module is in use by running tunnels; nothing was switched',
+                )
             out, err, code = self._run('modprobe amneziawg', log, 'activate', timeout=120, sudo=True)
             if code != 0:
                 self._rollback_kernel(version, previous, log)
                 raise PluginUpdateError('update_failed', 'module built but could not be loaded; rolled back')
 
+            # /sys shows the version of the module that is actually loaded;
+            # modinfo reads the newest file on disk, which can differ.
             out, _, _ = self._run(
-                'modinfo -F version amneziawg 2>/dev/null || true', log, 'verify',
+                'cat /sys/module/amneziawg/version 2>/dev/null || '
+                'modinfo -F version amneziawg 2>/dev/null || true',
+                log, 'verify',
             )
             loaded = _VERSION_RE.search(out or '')
             if not loaded or loaded.group(1) != version:
@@ -444,13 +483,37 @@ class AwgPluginUpdater:
             raise PluginUpdateError('update_failed', str(exc))
 
     def _rollback_kernel(self, version, previous, log):
-        """Restore the previously loaded module after a failed activation."""
+        """Restore the previously loaded module after a failed activation.
+
+        ``dkms install`` of the new version overwrote the old .ko on disk (both
+        versions install to the same path), so restoring the old module
+        requires rebuilding it from the kept DKMS source first.
+        """
         log('rollback', 'restoring previous module %s' % (previous or 'unknown'))
         self._run('dkms remove amneziawg/%s --all' % version, log, 'rollback', timeout=600)
+        if previous:
+            out, err, code = self._run(
+                'dkms build amneziawg/%s' % previous, log, 'rollback', timeout=1800,
+            )
+            if code != 0:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    'cannot rebuild module %s; reload the host before relying on AWG' % previous,
+                )
+            out, err, code = self._run(
+                'dkms install amneziawg/%s --force' % previous, log, 'rollback', timeout=600,
+            )
+            if code != 0:
+                raise PluginUpdateError(
+                    'rollback_failed',
+                    'cannot reinstall module %s; reload the host before relying on AWG' % previous,
+                )
         self._run('depmod -a', log, 'rollback', timeout=120, sudo=True)
         self._run('modprobe amneziawg', log, 'rollback', timeout=120, sudo=True)
         out, _, _ = self._run(
-            'modinfo -F version amneziawg 2>/dev/null || true', log, 'rollback',
+            'cat /sys/module/amneziawg/version 2>/dev/null || '
+            'modinfo -F version amneziawg 2>/dev/null || true',
+            log, 'rollback',
         )
         loaded = _VERSION_RE.search(out or '')
         if previous and (not loaded or loaded.group(1) != previous):
@@ -476,6 +539,14 @@ class AwgPluginUpdater:
         for name in names or ():
             log('start', 'starting %s' % name)
             self.ssh.run_command('docker start %s' % name, timeout=120)
+            # The tunnel comes back through start.sh; if it does not, the
+            # admin must see it instead of a silent "success".
+            out, _, _ = self.ssh.run_command(
+                'docker exec %s sh -c "awg show 2>/dev/null || wg show 2>/dev/null"' % name,
+                timeout=60,
+            )
+            if 'interface' not in (out or ''):
+                log('start', 'WARNING: %s started but its tunnel is not up yet' % name)
 
     # -- userspace ------------------------------------------------------------
 
@@ -646,6 +717,24 @@ class AwgPluginUpdater:
                 'update_failed',
                 'peer count dropped from %s to %s; rolling back' % (item['peers'], peers),
             )
+        # A restored config file does not mean the tunnel is up: start.sh runs
+        # at container start and can fail. The old container is still around,
+        # so failing here still allows a rollback.
+        tunnel = False
+        for _attempt in range(3):
+            out, err, code = self._run(
+                'docker exec %s sh -c "awg show 2>/dev/null || wg show 2>/dev/null"' % name,
+                log, 'verify', timeout=60,
+            )
+            if code == 0 and 'interface' in (out or ''):
+                tunnel = True
+                break
+            time.sleep(2)
+        if not tunnel:
+            raise PluginUpdateError(
+                'update_failed',
+                'the tunnel did not come up after the update; rolling back',
+            )
         self._run('docker rm -f %s' % old_name, log, 'cleanup')
         if item['image_id']:
             self._run('docker rmi %s' % item['image_id'], log, 'cleanup')
@@ -656,11 +745,17 @@ class AwgPluginUpdater:
         """Rebuild the panel's ``docker run`` command from container metadata."""
         bindings = host.get('PortBindings') or {}
         ports = []
-        for container_port, hosts in bindings.items():
+        for component_port, hosts in bindings.items():
+            # docker names the key "55424/udp"; without the protocol suffix
+            # `docker run -p` defaults to TCP and the tunnel would be dead.
+            if '/' in component_port:
+                port, proto = component_port.split('/', 1)
+            else:
+                port, proto = component_port, 'tcp'
             for binding in hosts or []:
                 host_port = (binding or {}).get('HostPort')
                 if host_port:
-                    ports.append('-p %s:%s' % (host_port, container_port))
+                    ports.append('-p %s:%s/%s' % (host_port, port, proto))
         sysctls = [
             '--sysctl="%s=%s"' % (key, value)
             for key, value in sorted((host.get('Sysctls') or {}).items())
