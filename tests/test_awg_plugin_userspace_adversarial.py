@@ -120,6 +120,12 @@ def userspace_handler(*, containers=CONTAINERS, ports=PORTS, networks=None,
                     )
             return ('', '', 0)
 
+        # _go_containers() identifies the panel's amneziawg-go images by the
+        # FROM line of their generated Dockerfile.  Must be answered before the
+        # plain `test -f ... Dockerfile` branch below.
+        if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+            return ('FROM amneziavpn/amneziawg-go:latest', '', 0)
+
         # Panel-created containers have their Dockerfile next to the config.
         if 'test -f' in command and 'Dockerfile' in command:
             return ('yes', '', 0)

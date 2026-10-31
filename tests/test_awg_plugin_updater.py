@@ -124,9 +124,14 @@ class VersionDetectionTests(unittest.TestCase):
         )
 
     def test_userspace_from_image_label(self):
+        """The label is the fallback when the running binary prints nothing."""
         def handler(command):
             if command.startswith('docker ps -a'):
                 return ('amnezia-awg3\tamneziavpn/amneziawg-go:latest', '', 0)
+            if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+                return ('FROM amneziavpn/amneziawg-go:latest', '', 0)
+            if command.startswith('docker exec') and 'amneziawg-go --version' in command:
+                return ('', '', 0)
             if 'Config.Labels' in command:
                 return (GO_NEW, '', 0)
             return ('', '', 0)
@@ -135,11 +140,14 @@ class VersionDetectionTests(unittest.TestCase):
         self.assertEqual(
             AwgPluginUpdater(ssh).installed_versions()[USERSPACE], GO_NEW,
         )
+        self.assertTrue(ssh.find('Config.Labels'))
 
     def test_userspace_falls_back_to_image_tag(self):
         def handler(command):
             if command.startswith('docker ps -a'):
                 return ('amnezia-awg2\tamneziavpn/amneziawg-go:%s' % OLD, '', 0)
+            if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+                return ('FROM amneziavpn/amneziawg-go:latest', '', 0)
             return ('', '', 0)
 
         ssh = FakeSSH(handler)
@@ -151,26 +159,46 @@ class VersionDetectionTests(unittest.TestCase):
 class StatusTests(unittest.TestCase):
     @staticmethod
     def _ssh_with_userspace():
-        return FakeSSH(lambda command: (
-            ('amnezia-awg3\tamneziavpn/amneziawg-go:latest', '', 0)
-            if command.startswith('docker ps -a') else ('', '', 0)
-        ))
+        def handler(command):
+            if command.startswith('docker ps -a'):
+                return ('amnezia-awg3\tamneziavpn/amneziawg-go:latest', '', 0)
+            if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+                return ('FROM amneziavpn/amneziawg-go:latest', '', 0)
+            return ('', '', 0)
+        return FakeSSH(handler)
 
     def test_update_available(self):
-        status = AwgPluginUpdater(self._ssh_with_userspace()).status(
-            latest={KERNEL_MODULE: NEW, USERSPACE: GO_NEW},
-            installed={KERNEL_MODULE: OLD, USERSPACE: OLD},
-        )
-        self.assertTrue(status['components'][KERNEL_MODULE]['update_available'])
-        self.assertTrue(status['components'][USERSPACE]['update_available'])
+        """Userspace is listed but status() never offers it as an update.
+
+        The daemon reports 0.0.YYYYMMDD, which cannot be compared with the
+        repository's 3.1.YYYYMMDD tags, so no "available" version is fetched
+        and the component is never marked updatable.
+        """
+        from managers.awg_plugin_updater import _tag_cache
+        _tag_cache.clear()
+
+        def source(name):
+            return ['v3.1.20260906'] if 'kernel' in name else ['v3.1.20260828']
+
+        status = AwgPluginUpdater(
+            self._ssh_with_userspace(), tag_source=source,
+        ).status(installed={KERNEL_MODULE: OLD, USERSPACE: '0.0.20250522'})
+        kernel = status['components'][KERNEL_MODULE]
+        userspace = status['components'][USERSPACE]
+        self.assertTrue(kernel['update_available'])
+        self.assertTrue(userspace['applicable'])
+        self.assertEqual(userspace['installed'], '0.0.20250522')
+        self.assertIsNone(userspace['available'])
+        self.assertFalse(userspace['update_available'])
 
     def test_up_to_date(self):
         status = AwgPluginUpdater(self._ssh_with_userspace()).status(
-            latest={KERNEL_MODULE: NEW, USERSPACE: GO_NEW},
-            installed={KERNEL_MODULE: NEW, USERSPACE: GO_NEW},
+            latest={KERNEL_MODULE: NEW, USERSPACE: None},
+            installed={KERNEL_MODULE: NEW, USERSPACE: '0.0.20250522'},
         )
         self.assertFalse(status['components'][KERNEL_MODULE]['update_available'])
         self.assertFalse(status['components'][USERSPACE]['update_available'])
+        self.assertIsNone(status['components'][USERSPACE]['available'])
 
     def test_unknown_installed_is_update(self):
         status = AwgPluginUpdater(self._ssh_with_userspace()).status(
@@ -325,6 +353,13 @@ class UserspaceUpdateTests(unittest.TestCase):
                 if shape == 'bad':
                     payload[0]['HostConfig']['NetworkMode'] = 'host'
                 return (json.dumps(payload), '', 0)
+            # _go_containers() reads the generated Dockerfile to tell the
+            # amneziawg-go images apart from the legacy amnezia-wg ones.
+            if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+                return (
+                    'FROM amneziavpn/amneziawg-go:latest' if dockerfile == 'yes' else '',
+                    '', 0,
+                )
             if 'test -f /opt/amnezia/' in command and 'Dockerfile' in command:
                 return ('yes' if dockerfile == 'yes' else '', '', 0)
             if 'docker cp amnezia-awg3:/opt/amnezia' in command:
@@ -354,11 +389,14 @@ class UserspaceUpdateTests(unittest.TestCase):
         self.assertFalse(ssh.find('docker build'))
 
     def test_container_without_panel_dockerfile_is_not_touched(self):
+        """Without the generated Dockerfile the container is not even detected."""
         ssh = FakeSSH(self._handler(dockerfile='no'))
         with self.assertRaises(PluginUpdateError) as ctx:
             AwgPluginUpdater(ssh).update(USERSPACE, GO_NEW, allow_interrupt=True)
-        self.assertEqual(ctx.exception.code, 'unsupported')
+        self.assertEqual(ctx.exception.code, 'not_installed')
         self.assertFalse(ssh.find('docker stop'))
+        self.assertFalse(ssh.find('docker build'))
+        self.assertFalse(ssh.find('docker cp'))
 
     def test_build_failure_touches_nothing(self):
         ssh = FakeSSH(self._handler(build=1))

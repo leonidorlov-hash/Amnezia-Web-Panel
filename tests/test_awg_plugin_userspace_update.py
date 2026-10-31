@@ -5,12 +5,9 @@ the *sequence* of remote commands: which version source is trusted, whether
 the panel's DNS network survives the recreate, what happens on cancellation,
 and which failure paths are allowed to delete the on-host backups.
 
-``_iteration`` (the parser used by ``_userspace_version``) only recognises a
-version at the beginning of a line, while ``_image_version`` uses an
-unanchored search.  The running-container fallback test therefore feeds the
-real ``amneziawg-go --version`` output (``amneziawg-go v3.1.20260828``) and
-documents that asymmetry instead of picking an output the parser happens to
-like.
+``_userspace_version`` asks the running container first (the daemon prints
+``amneziawg-go 0.0.YYYYMMDD``); the OCI image label is only a fallback and the
+image tag is the last resort.
 """
 
 import unittest
@@ -31,6 +28,12 @@ from tests.awg_plugin_fixtures import (
 
 CLEANUP = 'rm -rf /tmp/awg-plugin-update /tmp/awg-plugin-backup-*'
 PROBE_PREFIX = 'docker run --rm --entrypoint sh'
+US_BINARY = '0.0.20250522'
+US_BINARY_OUTPUT = (
+    'amneziawg-go 0.0.20250522\n\n'
+    'Userspace AmneziaWG daemon for linux-amd64.\n'
+    'Information available at https://amnezia.org\n'
+)
 
 
 def _index(commands, needle, start=0):
@@ -81,6 +84,11 @@ def userspace_handler(*, containers=None, inspect_options=None, peers_before='5'
             for name in containers:
                 if command.startswith('docker inspect %s' % name):
                     return (inspect_json(**inspect_options.get(name, {})), '', 0)
+
+        # _go_containers() identifies the panel's amneziawg-go images by the
+        # FROM line of their generated Dockerfile.
+        if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+            return ('FROM amneziavpn/amneziawg-go:latest', '', 0)
 
         if 'test -f' in command and 'Dockerfile' in command:
             return ('yes', '', 0)
@@ -154,28 +162,54 @@ class VersionSourceTests(unittest.TestCase):
         self.assertEqual(len(probes), 1)
         self.assertIn('amneziawg-go --version', probes[0])
 
-    def test_running_container_falls_back_to_the_binary(self):
-        """Label empty: ask the running container itself via docker exec."""
-        def handler(command):
-            if command.startswith('docker ps -a'):
-                return (DOCKER_PS, '', 0)
-            if 'Config.Labels' in command:
+    def test_running_container_binary_is_preferred_then_label_then_tag(self):
+        """Binary first, then the OCI label, and the image tag as last resort."""
+        def handler_for(*, exec_output='', label_output='', ps_line=DOCKER_PS):
+            def handler(command):
+                if command.startswith('docker ps -a'):
+                    return (ps_line, '', 0)
+                if command.startswith('head -1 /opt/amnezia/') and '/Dockerfile' in command:
+                    return ('FROM amneziavpn/amneziawg-go:latest', '', 0)
+                if command.startswith('docker exec') and 'amneziawg-go --version' in command:
+                    return (exec_output, '', 0)
+                if 'Config.Labels' in command:
+                    return (label_output, '', 0)
                 return ('', '', 0)
-            if command.startswith('docker exec') and 'amneziawg-go --version' in command:
-                # This is what the upstream binary actually prints.
-                return (
-                    'amneziawg-go v3.1.20260828\n\n'
-                    'Userspace AmneziaWG daemon for linux-amd64.\n'
-                    'Information available at https://amnezia.org\n',
-                    '', 0,
-                )
-            return ('', '', 0)
+            return handler
 
-        ssh = FakeSSH(handler)
-        self.assertEqual(
-            AwgPluginUpdater(ssh).installed_versions()[USERSPACE], GO_NEW,
-        )
-        self.assertTrue(ssh.find('amneziawg-go --version'))
+        with self.subTest('binary wins over the label'):
+            ssh = FakeSSH(handler_for(
+                exec_output=US_BINARY_OUTPUT, label_output=GO_NEW,
+            ))
+            self.assertEqual(
+                AwgPluginUpdater(ssh).installed_versions()[USERSPACE], US_BINARY,
+            )
+            self.assertTrue(ssh.find('amneziawg-go --version'))
+            self.assertFalse(
+                [c for c in ssh.commands if 'Config.Labels' in c],
+                'OCI label was queried even though the running binary answered',
+            )
+
+        with self.subTest('label used when the binary is silent'):
+            ssh = FakeSSH(handler_for(exec_output='', label_output=GO_NEW))
+            self.assertEqual(
+                AwgPluginUpdater(ssh).installed_versions()[USERSPACE], GO_NEW,
+            )
+            self.assertLess(
+                _index(ssh.commands, 'amneziawg-go --version'),
+                _index(ssh.commands, 'Config.Labels'),
+                'the label must only be asked after the binary stayed silent',
+            )
+
+        with self.subTest('image tag used when both are silent'):
+            ssh = FakeSSH(handler_for(
+                exec_output='',
+                label_output='',
+                ps_line='amnezia-awg3\tamneziavpn/amneziawg-go:%s' % OLD,
+            ))
+            self.assertEqual(
+                AwgPluginUpdater(ssh).installed_versions()[USERSPACE], OLD,
+            )
 
 
 class RecreateTests(unittest.TestCase):
@@ -209,10 +243,16 @@ class CleanupTests(unittest.TestCase):
         # Only after the new container has been verified and the old removed.
         self.assertGreater(cleanup, _index(ssh.commands, 'docker restart amnezia-awg3'))
         self.assertGreater(cleanup, _index(ssh.commands, 'docker rm -f amnezia-awg3.old-'))
-        # Nothing destructive remains after the cleanup.
+        # Nothing destructive remains after the cleanup.  Re-reading the
+        # installed version is allowed: it only runs read-only probes
+        # (docker ps/inspect/exec and the Dockerfile head that detects the
+        # amneziawg-go containers).
         for command in ssh.commands[cleanup + 1:]:
             self.assertTrue(
-                command.startswith(('docker ps', 'docker inspect', 'docker exec')),
+                command.startswith((
+                    'docker ps', 'docker inspect', 'docker exec',
+                    'head -1 /opt/amnezia/',
+                )),
                 'unexpected command after cleanup: %r' % command,
             )
 

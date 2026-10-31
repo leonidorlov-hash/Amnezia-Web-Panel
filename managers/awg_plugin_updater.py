@@ -258,6 +258,13 @@ class AwgPluginUpdater:
         )
 
     def _go_containers(self):
+        """AWG containers whose image is built from amneziawg-go.
+
+        The panel tags its derived images with the container name
+        (``amnezia-awg3``), so matching the base repository name never works.
+        The generated Dockerfile is the reliable marker, and it also excludes
+        the legacy ``amnezia-wg`` containers.
+        """
         out, _, _ = self.ssh.run_command(
             "docker ps -a --format '{{.Names}}\t{{.Image}}' 2>/dev/null || true"
         )
@@ -266,9 +273,15 @@ class AwgPluginUpdater:
             if '\t' not in line:
                 continue
             name, image = line.split('\t', 1)
-            if image.split(':', 1)[0].strip() != GO_IMAGE:
+            name = name.strip()
+            if not name.startswith('amnezia-awg'):
                 continue
-            containers.append((name.strip(), image.strip()))
+            dockerfile, _, _ = self.ssh.run_command(
+                'head -1 /opt/amnezia/%s/Dockerfile 2>/dev/null || true' % name
+            )
+            if 'amneziavpn/amneziawg-go' not in (dockerfile or ''):
+                continue
+            containers.append((name, image.strip()))
         return containers
 
     def _image_version(self, tag):
@@ -293,19 +306,22 @@ class AwgPluginUpdater:
         containers = containers if containers is not None else self._go_containers()
         versions = set()
         for name, image in containers:
+            # The userspace daemon has its own version line (0.0.YYYYMMDD),
+            # unrelated to the git tags of the repository, so the binary is
+            # the only honest source.
             out, _, _ = self.ssh.run_command(
-                "docker inspect --format "
-                "'{{index .Config.Labels \"org.opencontainers.image.version\"}}' "
-                "%s 2>/dev/null || true" % name
+                'docker exec %s sh -c '
+                '"amneziawg-go --version 2>/dev/null || wg --version 2>/dev/null" 2>/dev/null || true'
+                % name,
+                timeout=120,
             )
             for found in _iteration(out or ''):
                 versions.add(found)
             if not versions:
                 out, _, _ = self.ssh.run_command(
-                    'docker exec %s sh -c '
-                    '"amneziawg-go --version 2>/dev/null || wg --version 2>/dev/null" 2>/dev/null || true'
-                    % name,
-                    timeout=120,
+                    "docker inspect --format "
+                    "'{{index .Config.Labels \"org.opencontainers.image.version\"}}' "
+                    "%s 2>/dev/null || true" % name
                 )
                 for found in _iteration(out or ''):
                     versions.add(found)
@@ -329,6 +345,13 @@ class AwgPluginUpdater:
         if latest is None:
             latest = {}
             for component in COMPONENTS:
+                # The userspace daemon reports 0.0.YYYYMMDD, which cannot be
+                # compared with the repository's 3.1.YYYYMMDD tags. It is shown
+                # for information only and never offered as an update; it is
+                # replaced by rebuilding the protocol image.
+                if component == USERSPACE:
+                    latest[component] = None
+                    continue
                 if applicable[component]:
                     latest.update(self.latest_versions(component))
         components = {}
